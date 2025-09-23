@@ -24,3 +24,16 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@layer components {
+  .neon-purple {
+    @apply bg-gradient-to-br from-purple-900 via-indigo-900 to-purple-900 text-white shadow-lg shadow-purple-500/50;
+    box-shadow: 0 0 20px rgba(147, 51, 234, 0.5);
+  }
+  .neon-input {
+    @apply bg-purple-800/50 border border-purple-500/50 text-white placeholder-purple-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500/50;
+  }
+  .neon-btn {
+    @apply bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold py-2 px-4 rounded-lg shadow-md shadow-purple-500/25 hover:shadow-lg hover:shadow-purple-500/50 transition-all;
+  }
+}
