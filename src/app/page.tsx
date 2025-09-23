@@ -1,9 +1,9 @@
 "use client";
-import { useFormState } from "react-dom";
+import { useActionState } from "react";
 import { loginAction } from "./actions";
 
 export default function LoginPage() {
-  const [state, formAction] = useFormState(loginAction, null);
+  const [state, formAction] = useActionState(loginAction, null);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-black/80 backdrop-blur-sm relative">
