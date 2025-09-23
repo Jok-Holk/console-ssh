@@ -1,13 +1,8 @@
 "use client";
 import { useFormState } from "react-dom";
 import { loginAction } from "./actions";
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 
-export default async function LoginPage() {
-  const cookieStore = await cookies();
-  if (cookieStore.has("authToken")) redirect("/console");
-
+export default function LoginPage() {
   const [state, formAction] = useFormState(loginAction, null);
 
   return (
