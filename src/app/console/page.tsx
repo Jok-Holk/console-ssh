@@ -57,7 +57,10 @@ export default function ConsolePage() {
         term.current?.write(data);
       });
       term.current.onData((data: string) => {
-        socket.current?.emit("input", data);
+        if (!data.includes("\r\n")) {
+          // Avoid sending echoed lines
+          socket.current?.emit("input", data);
+        }
       });
       term.current.onResize((size: ResizeEvent) =>
         socket.current?.emit("resize", size)

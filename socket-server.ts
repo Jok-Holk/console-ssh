@@ -38,7 +38,7 @@ io.on("connection", (socket) => {
   ssh
     .on("ready", () => {
       console.log("SSH ready for socket:", socket.id);
-      ssh.shell((err: any, stream: any) => {
+      ssh.shell({ term: "xterm-256color" }, (err: any, stream: any) => {
         if (err) {
           console.error("SSH shell error for socket", socket.id, ":", err);
           return socket.disconnect();
