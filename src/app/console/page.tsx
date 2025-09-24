@@ -40,9 +40,11 @@ export default function ConsolePage() {
       fitAddon.current.fit();
       term.current.focus();
 
-      const token = document.cookie.split("authToken=")[1]?.split(";")[0];
-      socket.current = io("https://console.jokholk.dev/socket.io", {
-        auth: { token },
+      socket.current = io("/socket.io", {
+        auth: (cb) => {
+          const token = document.cookie.split("authToken=")[1]?.split(";")[0];
+          cb({ token });
+        },
       });
 
       socket.current.on("connect", () => {
