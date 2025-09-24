@@ -17,6 +17,7 @@ const io = new SocketServer(server, {
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
+  console.log("Auth attempt:", token);
   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {}))
     return next(new Error("Unauthorized"));
   next();
