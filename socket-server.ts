@@ -9,7 +9,7 @@ const port = 3001;
 const server = createServer();
 const io = new SocketServer(server, {
   cors: {
-    origin: ["http://localhost:3000"],
+    origin: ["https://console.jokholk.dev", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true,
   },
