@@ -10,6 +10,7 @@ export default function ConsolePage() {
   const term = useRef<Terminal | null>(null);
   const socket = useRef<ReturnType<typeof io> | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
+  const buffer = useRef<string>(""); // Buffer to collect full input
 
   useEffect(() => {
     let isMounted = true;
@@ -28,7 +29,7 @@ export default function ConsolePage() {
           cursor: "#9370db",
         },
         fontSize: 16,
-        scrollback: 1000, // Allow some scrollback
+        scrollback: 1000,
       });
       fitAddon.current = new FitAddon();
       term.current.loadAddon(fitAddon.current);
@@ -44,25 +45,25 @@ export default function ConsolePage() {
       });
 
       socket.current.on("connect", () => {
-        console.log("Socket connected");
-        term.current?.write("Connected to VPS...$ "); // Remove newline
+        term.current?.write("Connected to VPS...$ ");
       });
 
       socket.current.on("output", (data: string) => {
-        console.log("Received output:", data);
-        // Remove leading/trailing newlines from server output
         const cleanedData = data.replace(/^\n+|\n+$/g, "");
         term.current?.write(cleanedData);
       });
 
       term.current.onData((data: string) => {
-        if (data.length > 0 && !data.match(/[\r\n]/)) {
-          console.log("Sending input:", data);
-          socket.current?.emit("input", data);
-          term.current?.write(data); // Echo input locally to avoid server echo delay
-        } else if (data === "\r") {
-          term.current?.write("\n"); // Handle Enter key
-          socket.current?.emit("input", "\n");
+        if (data === "\r" || data === "\n") {
+          if (buffer.current.trim().length > 0) {
+            console.log("Sending full command:", buffer.current.trim());
+            socket.current?.emit("input", buffer.current.trim() + "\n");
+            buffer.current = ""; // Clear buffer after sending
+            term.current?.write("\n$ "); // Move to new prompt
+          }
+        } else if (data.length > 0) {
+          buffer.current += data;
+          term.current?.write(data); // Echo input locally
         }
       });
 
@@ -72,7 +73,6 @@ export default function ConsolePage() {
       });
 
       socket.current.on("disconnect", () => {
-        console.log("Socket disconnected");
         term.current?.write("\r\nDisconnected.\r\n");
       });
     })();
