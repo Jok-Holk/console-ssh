@@ -20,9 +20,7 @@ io.engine.on("connection_error", (err) => {
 });
 
 io.use((socket, next) => {
-  const cookie = socket.handshake.headers.cookie;
-  const tokenMatch = cookie?.match(/authToken=([^;]+)/);
-  const token = tokenMatch ? tokenMatch[1] : null;
+  const token = socket.handshake.auth.token;
   console.log("Auth attempt:", token);
   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
     console.log("Auth failed");
