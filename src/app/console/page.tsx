@@ -47,9 +47,6 @@ export default function ConsolePage() {
       });
       term.current.onData((data: string) => {
         socket.current?.emit("input", data);
-        if (data === "\r" || data === "\n") {
-          term.current?.write("\r\n");
-        }
       });
       term.current.onResize((size: ResizeEvent) => {
         fitAddon.current?.fit();
