@@ -1,18 +1,23 @@
 import "dotenv/config";
-import { createServer } from "http";
+import { createServer } from "https";
 import { Server as SocketServer } from "socket.io";
+import { readFileSync } from "fs";
 import { Client } from "ssh2";
-import fs from "fs";
+
+console.log("VPS_HOST:", process.env.VPS_HOST);
 
 const port = 3001;
-const server = createServer();
-const io = new SocketServer(server, {
+const httpsServer = createServer({
+  cert: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/fullchain.pem"),
+  key: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/privkey.pem"),
+});
+const io = new SocketServer(httpsServer, {
   cors: {
     origin: ["https://console.jokholk.dev", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true,
   },
-  path: "/socket.io/", // Ensure path matches client
+  path: "/socket.io/",
 });
 
 io.engine.on("connection_error", (err) => {
@@ -50,7 +55,7 @@ io.on("connection", (socket) => {
       host: process.env.VPS_HOST,
       port: 22,
       username: process.env.VPS_USER,
-      privateKey: fs.readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
+      privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
     });
   socket.on("disconnect", () => {
     console.log("Socket disconnected");
@@ -58,6 +63,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(port, "0.0.0.0", () =>
-  console.log(`Socket.io on http://localhost:${port}`)
+httpsServer.listen(port, "0.0.0.0", () =>
+  console.log(`Socket.io on https://localhost:${port}`)
 );
