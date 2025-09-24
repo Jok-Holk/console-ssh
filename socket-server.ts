@@ -60,6 +60,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(port, "127.0.0.1", () =>
+server.listen(port, "0.0.0.0", () =>
   console.log(`Socket.io on http://localhost:${port}`)
 );
