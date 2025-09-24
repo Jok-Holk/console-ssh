@@ -28,11 +28,12 @@ export default function ConsolePage() {
           cursor: "#9370db",
         },
         fontSize: 16,
+        scrollback: 1000, // Allow some scrollback
       });
       fitAddon.current = new FitAddon();
       term.current.loadAddon(fitAddon.current);
       term.current.open(termRef.current);
-      fitAddon.current.fit(); // Ensure initial fit
+      fitAddon.current.fit();
       term.current.focus();
 
       const token =
@@ -44,23 +45,29 @@ export default function ConsolePage() {
 
       socket.current.on("connect", () => {
         console.log("Socket connected");
-        term.current?.write("\r\nConnected to VPS...\r\n$ ");
+        term.current?.write("Connected to VPS...$ "); // Remove newline
       });
 
       socket.current.on("output", (data: string) => {
         console.log("Received output:", data);
-        term.current?.write(data);
+        // Remove leading/trailing newlines from server output
+        const cleanedData = data.replace(/^\n+|\n+$/g, "");
+        term.current?.write(cleanedData);
       });
 
       term.current.onData((data: string) => {
         if (data.length > 0 && !data.match(/[\r\n]/)) {
           console.log("Sending input:", data);
           socket.current?.emit("input", data);
+          term.current?.write(data); // Echo input locally to avoid server echo delay
+        } else if (data === "\r") {
+          term.current?.write("\n"); // Handle Enter key
+          socket.current?.emit("input", "\n");
         }
       });
 
       term.current.onResize((size: ResizeEvent) => {
-        fitAddon.current?.fit(); // Refit on resize
+        fitAddon.current?.fit();
         socket.current?.emit("resize", size);
       });
 

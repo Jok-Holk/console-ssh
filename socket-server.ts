@@ -4,8 +4,6 @@ import { Server as SocketServer } from "socket.io";
 import { readFileSync } from "fs";
 import { Client } from "ssh2";
 
-console.log("VPS_HOST:", process.env.VPS_HOST);
-
 const port = 3001;
 const httpsServer = createServer({
   cert: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/fullchain.pem"),
@@ -19,48 +17,33 @@ const io = new SocketServer(httpsServer, {
   },
   path: "/socket.io/",
 });
-
-io.engine.on("connection_error", (err) => {
-  console.log("Connection error:", err.req?.url, err.message, err.context);
-});
-
-io.engine.on("upgrade", (req) => {
-  console.log("WebSocket upgrade attempt:", req.url, "headers:", req.headers);
-});
-
+io.engine.on("connection_error", (err) => {});
+io.engine.on("upgrade", (req) => {});
 io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
   const ssh = new Client();
   ssh
     .on("ready", () => {
-      console.log("SSH ready for socket:", socket.id);
       ssh.shell(
         { term: "xterm-256color", rows: 24, cols: 80 },
         (err: any, stream: any) => {
           if (err) {
-            console.error("SSH shell error for socket", socket.id, ":", err);
             return socket.disconnect();
           }
           stream.on("close", () => {
-            console.log("Stream closed for socket:", socket.id);
             ssh.end();
           });
           stream.on("data", (data: Buffer) => {
-            const output = data.toString().replace(/\r\n|\n\r|\n|\r/g, "\r\n"); // Normalize newlines
-            console.log("SSH data received:", output);
+            const output = data.toString().replace(/\r\n|\n\r|\n|\r/g, "\r\n");
             socket.emit("output", output);
           });
           socket.on("input", (data: string) => {
-            console.log("Client input:", data);
             if (data !== "\r" && data !== "\n") {
-              // Prevent empty newline sends
               stream.write(data);
             }
           });
           socket.on(
             "resize",
             ({ cols, rows }: { cols: number; rows: number }) => {
-              console.log("Resize to", cols, rows);
               stream.setWindow(cols, rows, 0, 0);
             }
           );
@@ -68,9 +51,7 @@ io.on("connection", (socket) => {
         }
       );
     })
-    .on("error", (err) =>
-      console.error("SSH error for socket", socket.id, ":", err)
-    )
+    .on("error", (err) => {})
     .connect({
       host: process.env.VPS_HOST,
       port: 22,
@@ -78,11 +59,9 @@ io.on("connection", (socket) => {
       privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
     });
   socket.on("disconnect", () => {
-    console.log("Socket disconnected:", socket.id);
     ssh.end();
   });
 });
-
 httpsServer.listen(port, "0.0.0.0", () =>
   console.log(`Socket.io on https://localhost:${port}`)
 );
