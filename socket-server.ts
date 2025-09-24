@@ -47,7 +47,6 @@ io.on("connection", (socket) => {
       });
     })
     .on("error", (err) => console.error("SSH error:", err))
-
     .connect({
       host: process.env.VPS_HOST,
       port: 22,
@@ -56,7 +55,6 @@ io.on("connection", (socket) => {
     });
   socket.on("disconnect", () => {
     console.log("Socket disconnected");
-
     ssh.end();
   });
 });
