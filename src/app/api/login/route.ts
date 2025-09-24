@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid pass" }, { status: 401 });
   }
 
-  await redis.del(key); // Xóa sau verify
+  await redis.del(key); // Delete the key after successful login
   const token = jwt.sign({ user: "admin" }, process.env.JWT_SECRET!, {
     expiresIn: "1h",
   });

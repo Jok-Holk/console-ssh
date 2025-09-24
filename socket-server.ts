@@ -5,7 +5,6 @@ import { Client } from "ssh2";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 
-require("dotenv").config({ path: ".env" });
 const port = 3001;
 const server = createServer();
 const io = new SocketServer(server, {
