@@ -17,8 +17,7 @@ const io = new SocketServer(httpsServer, {
   },
   path: "/socket.io/",
 });
-io.engine.on("connection_error", (err) => {});
-io.engine.on("upgrade", (req) => {});
+
 io.on("connection", (socket) => {
   const ssh = new Client();
   ssh
@@ -26,20 +25,17 @@ io.on("connection", (socket) => {
       ssh.shell(
         { term: "xterm-256color", rows: 24, cols: 80 },
         (err: any, stream: any) => {
-          if (err) {
-            return socket.disconnect();
-          }
-          stream.on("close", () => {
-            ssh.end();
-          });
+          if (err) return socket.disconnect();
+          stream.on("close", () => ssh.end());
           stream.on("data", (data: Buffer) => {
-            const output = data.toString().replace(/\r\n|\n\r|\n|\r/g, "\r\n");
-            socket.emit("output", output);
+            const output = data
+              .toString()
+              .replace(/^\n+|\n+$/g, "")
+              .trim();
+            if (output) socket.emit("output", output + "\n$ ");
           });
           socket.on("input", (data: string) => {
-            if (data !== "\r" && data !== "\n") {
-              stream.write(data);
-            }
+            if (data.trim()) stream.write(data);
           });
           socket.on(
             "resize",
@@ -51,17 +47,16 @@ io.on("connection", (socket) => {
         }
       );
     })
-    .on("error", (err) => {})
+    .on("error", () => {})
     .connect({
       host: process.env.VPS_HOST,
       port: 22,
       username: process.env.VPS_USER,
       privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
     });
-  socket.on("disconnect", () => {
-    ssh.end();
-  });
+  socket.on("disconnect", () => ssh.end());
 });
+
 httpsServer.listen(port, "0.0.0.0", () =>
   console.log(`Socket.io on https://localhost:${port}`)
 );

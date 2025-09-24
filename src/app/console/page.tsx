@@ -10,7 +10,6 @@ export default function ConsolePage() {
   const term = useRef<Terminal | null>(null);
   const socket = useRef<ReturnType<typeof io> | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
-  const buffer = useRef<string>(""); // Buffer for full command
 
   useEffect(() => {
     let isMounted = true;
@@ -30,7 +29,6 @@ export default function ConsolePage() {
         },
         fontSize: 16,
         scrollback: 1000,
-        cursorStyle: "block", // Clear cursor style for better visibility
       });
       fitAddon.current = new FitAddon();
       term.current.loadAddon(fitAddon.current);
@@ -46,27 +44,22 @@ export default function ConsolePage() {
       });
 
       socket.current.on("connect", () => {
-        term.current?.clear(); // Clear terminal on connect
-        term.current?.write("Connected to VPS...$ "); // Single line prompt
+        term.current?.clear();
+        term.current?.write("Connected to VPS...$ ");
       });
 
       socket.current.on("output", (data: string) => {
-        const cleanedData = data.replace(/^\n+|\n+$/g, "").trim();
-        if (cleanedData) {
-          term.current?.write(
-            cleanedData + (cleanedData.endsWith("$") ? "" : "\n$ ")
-          );
-        }
+        term.current?.write(data);
       });
 
       term.current.onData((data: string) => {
         if (data === "\r" || data === "\n") {
-          if (buffer.current.trim().length > 0) {
-            socket.current?.emit("input", buffer.current.trim() + "\n");
-            buffer.current = ""; // Clear buffer
+          const command = term.current?.getSelection() || "";
+          if (command.trim()) {
+            socket.current?.emit("input", command.trim() + "\n");
+            term.current?.write("\n$ "); // New prompt
           }
-        } else if (data.length > 0 && !data.match(/[\r\n]/)) {
-          buffer.current += data;
+        } else {
           term.current?.write(data); // Echo input locally
         }
       });
