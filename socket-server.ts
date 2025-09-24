@@ -49,8 +49,8 @@ io.on("connection", (socket) => {
         socket.on("resize", ({ cols, rows }: { cols: number; rows: number }) =>
           stream.setWindow(cols, rows, 0, 0)
         );
-        // Emit initial resize
-        socket.emit("resize", { cols: 80, rows: 24 });
+        // Initial resize
+        stream.setWindow(80, 24, 0, 0);
       });
     })
     .on("error", (err) => console.error("SSH error:", err))
