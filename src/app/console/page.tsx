@@ -42,7 +42,9 @@ export default function ConsolePage() {
 
       socket.current = io("/socket.io", {
         auth: (cb) => {
-          const token = document.cookie.split("authToken=")[1]?.split(";")[0];
+          const token =
+            document.cookie.split("authToken=")[1]?.split(";")[0] ||
+            "default-token";
           cb({ token });
         },
       });
