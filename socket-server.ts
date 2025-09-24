@@ -20,6 +20,7 @@ io.engine.on("connection_error", (err) => {
 });
 
 io.use((socket, next) => {
+  console.log("Middleware triggered");
   const token = socket.handshake.auth.token;
   console.log("Auth attempt:", token);
   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
