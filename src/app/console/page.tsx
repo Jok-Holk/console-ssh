@@ -10,6 +10,7 @@ export default function ConsolePage() {
   const term = useRef<Terminal | null>(null);
   const socket = useRef<ReturnType<typeof io> | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
+  const prompt = useRef<string>("root@vpsmmo-phucthai:~# ");
 
   useEffect(() => {
     let isMounted = true;
@@ -45,19 +46,27 @@ export default function ConsolePage() {
 
       socket.current.on("connect", () => {
         term.current?.clear();
-        term.current?.write("Connected to VPS...$ ");
+        term.current?.write(prompt.current);
       });
 
       socket.current.on("output", (data: string) => {
-        term.current?.write(data);
+        term.current?.write(data + "\n" + prompt.current); // Append prompt after output
       });
 
       term.current.onData((data: string) => {
         if (data === "\r" || data === "\n") {
-          const command = term.current?.getSelection() || "";
-          if (command.trim()) {
-            socket.current?.emit("input", command.trim() + "\n");
-            term.current?.write("\n$ "); // New prompt
+          const currentLine = term.current?.buffer.active.getLine(
+            term.current.buffer.active.cursorY
+          );
+          if (currentLine) {
+            const command = currentLine.translateToString().trim();
+            if (command.startsWith(prompt.current)) {
+              const input = command.replace(prompt.current, "").trim();
+              if (input) {
+                socket.current?.emit("input", input + "\n");
+                term.current?.write("\n" + prompt.current); // New line with prompt
+              }
+            }
           }
         } else {
           term.current?.write(data); // Echo input locally

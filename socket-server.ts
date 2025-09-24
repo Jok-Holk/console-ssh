@@ -28,11 +28,8 @@ io.on("connection", (socket) => {
           if (err) return socket.disconnect();
           stream.on("close", () => ssh.end());
           stream.on("data", (data: Buffer) => {
-            const output = data
-              .toString()
-              .replace(/^\n+|\n+$/g, "")
-              .trim();
-            if (output) socket.emit("output", output + "\n$ ");
+            const output = data.toString().trim();
+            if (output) socket.emit("output", output);
           });
           socket.on("input", (data: string) => {
             if (data.trim()) stream.write(data);
