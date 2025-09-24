@@ -4,14 +4,11 @@ import io from "socket.io-client";
 import type { Terminal } from "xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 type ResizeEvent = { cols: number; rows: number };
-
 export default function ConsolePage() {
   const termRef = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal | null>(null);
   const socket = useRef<ReturnType<typeof io> | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
-  const prompt = useRef<string>("root@vpsmmo-phucthai:~# ");
-
   useEffect(() => {
     let isMounted = true;
     (async () => {
@@ -36,48 +33,28 @@ export default function ConsolePage() {
       term.current.open(termRef.current);
       fitAddon.current.fit();
       term.current.focus();
-
       const token =
         document.cookie.split("authToken=")[1]?.split(";")[0] ||
         "default-token";
       socket.current = io("wss://console.jokholk.dev:3001", {
         auth: (cb) => cb({ token }),
       });
-
       socket.current.on("connect", () => {
         term.current?.clear();
-        term.current?.write(prompt.current);
       });
-
       socket.current.on("output", (data: string) => {
-        term.current?.write(data + "\n" + prompt.current); // Append prompt after output
+        term.current?.write(data);
       });
-
       term.current.onData((data: string) => {
+        socket.current?.emit("input", data);
         if (data === "\r" || data === "\n") {
-          const currentLine = term.current?.buffer.active.getLine(
-            term.current.buffer.active.cursorY
-          );
-          if (currentLine) {
-            const command = currentLine.translateToString().trim();
-            if (command.startsWith(prompt.current)) {
-              const input = command.replace(prompt.current, "").trim();
-              if (input) {
-                socket.current?.emit("input", input + "\n");
-                term.current?.write("\n" + prompt.current); // New line with prompt
-              }
-            }
-          }
-        } else {
-          term.current?.write(data); // Echo input locally
+          term.current?.write("\r\n");
         }
       });
-
       term.current.onResize((size: ResizeEvent) => {
         fitAddon.current?.fit();
         socket.current?.emit("resize", size);
       });
-
       socket.current.on("disconnect", () => {
         term.current?.write("\r\nDisconnected.\r\n");
       });
@@ -88,12 +65,10 @@ export default function ConsolePage() {
       term.current?.dispose();
     };
   }, []);
-
   const logout = async () => {
     const res = await fetch("/api/logout", { method: "POST" });
     if (res.ok) window.location.href = "/";
   };
-
   return (
     <div className="min-h-screen bg-black/90 flex items-center justify-center p-4">
       <div className="w-full max-w-4xl neon-purple rounded-xl overflow-auto">

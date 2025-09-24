@@ -3,7 +3,6 @@ import { createServer } from "https";
 import { Server as SocketServer } from "socket.io";
 import { readFileSync } from "fs";
 import { Client } from "ssh2";
-
 const port = 3001;
 const httpsServer = createServer({
   cert: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/fullchain.pem"),
@@ -17,7 +16,6 @@ const io = new SocketServer(httpsServer, {
   },
   path: "/socket.io/",
 });
-
 io.on("connection", (socket) => {
   const ssh = new Client();
   ssh
@@ -28,11 +26,10 @@ io.on("connection", (socket) => {
           if (err) return socket.disconnect();
           stream.on("close", () => ssh.end());
           stream.on("data", (data: Buffer) => {
-            const output = data.toString().trim();
-            if (output) socket.emit("output", output);
+            socket.emit("output", data.toString());
           });
           socket.on("input", (data: string) => {
-            if (data.trim()) stream.write(data);
+            stream.write(data);
           });
           socket.on(
             "resize",
@@ -53,7 +50,6 @@ io.on("connection", (socket) => {
     });
   socket.on("disconnect", () => ssh.end());
 });
-
 httpsServer.listen(port, "0.0.0.0", () =>
   console.log(`Socket.io on https://localhost:${port}`)
 );
