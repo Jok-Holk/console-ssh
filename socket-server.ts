@@ -24,6 +24,8 @@ io.on("connection", (socket) => {
         { term: "xterm-256color", rows: 24, cols: 80 },
         (err: any, stream: any) => {
           if (err) return socket.disconnect();
+          // Disable echo immediately
+          stream.write("stty -echo\r\n");
           stream.on("close", () => ssh.end());
           stream.on("data", (data: Buffer) => {
             socket.emit("output", data.toString());
@@ -38,8 +40,6 @@ io.on("connection", (socket) => {
             }
           );
           stream.setWindow(80, 24, 0, 0);
-          // Disable echo for local echoing in client
-          stream.write("stty -echo\r\n");
         }
       );
     })
