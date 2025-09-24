@@ -5,6 +5,8 @@ import { Client } from "ssh2";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 
+console.log("VPS_HOST:", process.env.VPS_HOST); // Test .env read
+
 const port = 3001;
 const server = createServer();
 const io = new SocketServer(server, {
