@@ -38,6 +38,8 @@ io.on("connection", (socket) => {
             }
           );
           stream.setWindow(80, 24, 0, 0);
+          // Disable echo for local echoing in client
+          stream.write("stty -echo\r\n");
         }
       );
     })

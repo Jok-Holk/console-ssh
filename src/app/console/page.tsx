@@ -40,13 +40,14 @@ export default function ConsolePage() {
         auth: (cb) => cb({ token }),
       });
       socket.current.on("connect", () => {
-        term.current?.clear();
+        // Removed clear to avoid potential garbling
       });
       socket.current.on("output", (data: string) => {
         term.current?.write(data);
       });
       term.current.onData((data: string) => {
         socket.current?.emit("input", data);
+        term.current?.write(data);
       });
       term.current.onResize((size: ResizeEvent) => {
         fitAddon.current?.fit();
