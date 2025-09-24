@@ -3,7 +3,6 @@ import { useEffect, useRef } from "react";
 import io from "socket.io-client";
 import type { Terminal } from "xterm";
 import type { FitAddon } from "@xterm/addon-fit";
-
 type ResizeEvent = { cols: number; rows: number };
 
 export default function ConsolePage() {
@@ -14,17 +13,13 @@ export default function ConsolePage() {
 
   useEffect(() => {
     let isMounted = true;
-
     (async () => {
       if (!isMounted || !termRef.current) return;
-
       const XTermModule = await import("xterm");
       const FitModule = await import("@xterm/addon-fit");
       await import("xterm/css/xterm.css");
-
       const { Terminal } = XTermModule;
       const { FitAddon } = FitModule;
-
       term.current = new Terminal({
         cursorBlink: true,
         theme: {
@@ -40,37 +35,40 @@ export default function ConsolePage() {
       fitAddon.current.fit();
       term.current.focus();
 
+      const token =
+        document.cookie.split("authToken=")[1]?.split(";")[0] ||
+        "default-token";
       socket.current = io("wss://console.jokholk.dev:3001", {
-        auth: (cb) => {
-          const token =
-            document.cookie.split("authToken=")[1]?.split(";")[0] ||
-            "default-token";
-          cb({ token });
-        },
+        auth: (cb) => cb({ token }),
       });
 
       socket.current.on("connect", () => {
         console.log("Socket connected");
         term.current?.write("\r\nConnected to VPS...\r\n$ ");
       });
+
       socket.current.on("output", (data: string) => {
+        console.log("Received output:", data); // Debug output
         term.current?.write(data);
       });
+
       term.current.onData((data: string) => {
-        if (!data.includes("\r\n")) {
-          // Avoid sending echoed lines
-          socket.current?.emit("input", data);
+        if (!data.match(/[\r\n]/) && socket.current) {
+          // Filter out echoed newlines
+          console.log("Sending input:", data); // Debug input
+          socket.current.emit("input", data);
         }
       });
+
       term.current.onResize((size: ResizeEvent) =>
         socket.current?.emit("resize", size)
       );
+
       socket.current.on("disconnect", () => {
         console.log("Socket disconnected");
         term.current?.write("\r\nDisconnected.\r\n");
       });
     })();
-
     return () => {
       isMounted = false;
       socket.current?.disconnect();

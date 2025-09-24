@@ -24,10 +24,6 @@ io.engine.on("connection_error", (err) => {
   console.log("Connection error:", err.req?.url, err.message, err.context);
 });
 
-io.engine.on("headers", (headers, req) => {
-  console.log("Received headers:", headers, "for request:", req.url);
-});
-
 io.engine.on("upgrade", (req) => {
   console.log("WebSocket upgrade attempt:", req.url, "headers:", req.headers);
 });
@@ -38,21 +34,36 @@ io.on("connection", (socket) => {
   ssh
     .on("ready", () => {
       console.log("SSH ready for socket:", socket.id);
-      ssh.shell({ term: "xterm-256color" }, (err: any, stream: any) => {
-        if (err) {
-          console.error("SSH shell error for socket", socket.id, ":", err);
-          return socket.disconnect();
+      ssh.shell(
+        { term: "xterm-256color", rows: 24, cols: 80 },
+        (err: any, stream: any) => {
+          if (err) {
+            console.error("SSH shell error for socket", socket.id, ":", err);
+            return socket.disconnect();
+          }
+          stream.on("close", () => {
+            console.log("Stream closed for socket:", socket.id);
+            ssh.end();
+          });
+          stream.on("data", (data: Buffer) => {
+            console.log("SSH data received:", data.toString()); // Debug output
+            socket.emit("output", data.toString());
+          });
+          socket.on("input", (data: string) => {
+            console.log("Client input:", data); // Debug input
+            stream.write(data);
+          });
+          socket.on(
+            "resize",
+            ({ cols, rows }: { cols: number; rows: number }) => {
+              console.log("Resize to", cols, rows);
+              stream.setWindow(cols, rows, 0, 0);
+              stream.setWindow(cols, rows, 0, 0); // Double call to ensure
+            }
+          );
+          stream.setWindow(80, 24, 0, 0);
         }
-        stream.on("close", () => ssh.end());
-        stream.on("data", (data: Buffer) =>
-          socket.emit("output", data.toString())
-        );
-        socket.on("input", (data: string) => stream.write(data));
-        socket.on("resize", ({ cols, rows }: { cols: number; rows: number }) =>
-          stream.setWindow(cols, rows, 0, 0)
-        );
-        stream.setWindow(80, 24, 0, 0);
-      });
+      );
     })
     .on("error", (err) =>
       console.error("SSH error for socket", socket.id, ":", err)
