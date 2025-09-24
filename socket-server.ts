@@ -24,19 +24,23 @@ io.engine.on("connection_error", (err) => {
   console.log("Connection error:", err.req?.url, err.message, err.context);
 });
 
+io.engine.on("headers", (headers, req) => {
+  console.log("Received headers:", headers, "for request:", req.url);
+});
+
 io.engine.on("upgrade", (req) => {
-  console.log("WebSocket upgrade attempt:", req.url);
+  console.log("WebSocket upgrade attempt:", req.url, "headers:", req.headers);
 });
 
 io.on("connection", (socket) => {
-  console.log("Socket connected");
+  console.log("Socket connected:", socket.id);
   const ssh = new Client();
   ssh
     .on("ready", () => {
-      console.log("SSH ready");
+      console.log("SSH ready for socket:", socket.id);
       ssh.shell((err: any, stream: any) => {
         if (err) {
-          console.error("SSH shell error:", err);
+          console.error("SSH shell error for socket", socket.id, ":", err);
           return socket.disconnect();
         }
         stream.on("close", () => ssh.end());
@@ -50,7 +54,9 @@ io.on("connection", (socket) => {
         stream.setWindow(80, 24, 0, 0);
       });
     })
-    .on("error", (err) => console.error("SSH error:", err))
+    .on("error", (err) =>
+      console.error("SSH error for socket", socket.id, ":", err)
+    )
     .connect({
       host: process.env.VPS_HOST,
       port: 22,
@@ -58,7 +64,7 @@ io.on("connection", (socket) => {
       privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
     });
   socket.on("disconnect", () => {
-    console.log("Socket disconnected");
+    console.log("Socket disconnected:", socket.id);
     ssh.end();
   });
 });

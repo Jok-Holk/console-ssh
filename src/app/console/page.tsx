@@ -40,7 +40,7 @@ export default function ConsolePage() {
       fitAddon.current.fit();
       term.current.focus();
 
-      socket.current = io("/socket.io", {
+      socket.current = io("wss://console.jokholk.dev:3001", {
         auth: (cb) => {
           const token =
             document.cookie.split("authToken=")[1]?.split(";")[0] ||
