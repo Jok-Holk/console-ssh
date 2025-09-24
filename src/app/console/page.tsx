@@ -41,7 +41,7 @@ export default function ConsolePage() {
       term.current.focus();
 
       const token = document.cookie.split("authToken=")[1]?.split(";")[0];
-      socket.current = io("/socket.io/", { auth: { token } });
+      socket.current = io("http://103.77.243.5:3001", { auth: { token } });
 
       socket.current.on("connect", () => {
         console.log("Socket connected");
