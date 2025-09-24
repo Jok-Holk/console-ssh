@@ -48,15 +48,14 @@ export default function ConsolePage() {
       });
 
       socket.current.on("output", (data: string) => {
-        console.log("Received output:", data); // Debug output
+        console.log("Received output:", data);
         term.current?.write(data);
       });
 
       term.current.onData((data: string) => {
-        if (!data.match(/[\r\n]/) && socket.current) {
-          // Filter out echoed newlines
-          console.log("Sending input:", data); // Debug input
-          socket.current.emit("input", data);
+        if (data.length > 0 && !data.match(/[\r\n]/)) {
+          console.log("Sending input:", data);
+          socket.current?.emit("input", data);
         }
       });
 

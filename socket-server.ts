@@ -46,19 +46,22 @@ io.on("connection", (socket) => {
             ssh.end();
           });
           stream.on("data", (data: Buffer) => {
-            console.log("SSH data received:", data.toString()); // Debug output
-            socket.emit("output", data.toString());
+            const output = data.toString().replace(/\r\n|\n\r|\n|\r/g, "\r\n"); // Normalize newlines
+            console.log("SSH data received:", output);
+            socket.emit("output", output);
           });
           socket.on("input", (data: string) => {
-            console.log("Client input:", data); // Debug input
-            stream.write(data);
+            console.log("Client input:", data);
+            if (data !== "\r" && data !== "\n") {
+              // Prevent empty newline sends
+              stream.write(data);
+            }
           });
           socket.on(
             "resize",
             ({ cols, rows }: { cols: number; rows: number }) => {
               console.log("Resize to", cols, rows);
               stream.setWindow(cols, rows, 0, 0);
-              stream.setWindow(cols, rows, 0, 0); // Double call to ensure
             }
           );
           stream.setWindow(80, 24, 0, 0);
