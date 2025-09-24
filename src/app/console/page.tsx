@@ -32,7 +32,7 @@ export default function ConsolePage() {
       fitAddon.current = new FitAddon();
       term.current.loadAddon(fitAddon.current);
       term.current.open(termRef.current);
-      fitAddon.current.fit();
+      fitAddon.current.fit(); // Ensure initial fit
       term.current.focus();
 
       const token =
@@ -59,9 +59,10 @@ export default function ConsolePage() {
         }
       });
 
-      term.current.onResize((size: ResizeEvent) =>
-        socket.current?.emit("resize", size)
-      );
+      term.current.onResize((size: ResizeEvent) => {
+        fitAddon.current?.fit(); // Refit on resize
+        socket.current?.emit("resize", size);
+      });
 
       socket.current.on("disconnect", () => {
         console.log("Socket disconnected");
@@ -82,7 +83,7 @@ export default function ConsolePage() {
 
   return (
     <div className="min-h-screen bg-black/90 flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl neon-purple rounded-xl overflow-hidden">
+      <div className="w-full max-w-4xl neon-purple rounded-xl overflow-auto">
         <header className="p-4 border-b border-purple-500/30 flex justify-between">
           <h1 className="text-xl font-bold text-purple-300">Terminal</h1>
           <button onClick={logout} className="neon-btn text-sm">
@@ -91,7 +92,7 @@ export default function ConsolePage() {
         </header>
         <div
           ref={termRef}
-          className="h-[480px] p-4"
+          className="h-[calc(100vh-200px)] p-4"
           onClick={() => term.current?.focus()}
         />
       </div>
