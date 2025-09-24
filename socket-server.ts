@@ -5,8 +5,6 @@ import { Client } from "ssh2";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 
-console.log("VPS_HOST:", process.env.VPS_HOST); // Test .env read
-
 const port = 3001;
 const server = createServer();
 const io = new SocketServer(server, {
@@ -51,7 +49,6 @@ io.on("connection", (socket) => {
         socket.on("resize", ({ cols, rows }: { cols: number; rows: number }) =>
           stream.setWindow(cols, rows, 0, 0)
         );
-        // Initial resize
         stream.setWindow(80, 24, 0, 0);
       });
     })
