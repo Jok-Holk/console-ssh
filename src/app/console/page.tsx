@@ -46,8 +46,19 @@ export default function ConsolePage() {
         term.current?.write(data);
       });
       term.current.onData((data: string) => {
-        socket.current?.emit("input", data);
-        term.current?.write(data);
+        const code = data.charCodeAt(0);
+        if (code === 13) {
+          // Enter
+          socket.current?.emit("input", "\n");
+          term.current?.write("\r\n");
+        } else if (code === 127) {
+          // Backspace
+          socket.current?.emit("input", data);
+          term.current?.write("\b \b");
+        } else {
+          socket.current?.emit("input", data);
+          term.current?.write(data);
+        }
       });
       term.current.onResize((size: ResizeEvent) => {
         fitAddon.current?.fit();
