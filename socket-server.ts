@@ -14,7 +14,13 @@ const io = new SocketServer(server, {
     credentials: true,
   },
 });
+io.engine.on("initial_headers", (headers, req) => {
+  console.log("Initial headers:", headers);
+});
 
+io.engine.on("headers", (headers, req) => {
+  console.log("Headers:", headers);
+});
 io.engine.on("connection_error", (err) => {
   console.log("Connection error:", err.req?.url, err.message);
 });
