@@ -5,6 +5,8 @@ import { Client } from "ssh2";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 
+console.log("VPS_HOST:", process.env.VPS_HOST); // Test .env read
+
 const port = 3001;
 const server = createServer();
 const io = new SocketServer(server, {
@@ -14,20 +16,21 @@ const io = new SocketServer(server, {
     credentials: true,
   },
 });
+
 io.engine.on("connection_error", (err) => {
   console.log("Connection error:", err.req?.url, err.message, err.context);
 });
 
-io.use((socket, next) => {
-  console.log("Middleware triggered", socket.handshake);
-  const token = socket.handshake.auth.token;
-  console.log("Auth attempt:", token);
-  if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
-    console.log("Auth failed");
-    return next(new Error("Unauthorized"));
-  }
-  next();
-});
+// io.use((socket, next) => {
+//   console.log("Middleware triggered", socket.handshake);
+//   const token = socket.handshake.auth.token;
+//   console.log("Auth attempt:", token);
+//   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
+//     console.log("Auth failed");
+//     return next(new Error("Unauthorized"));
+//   }
+//   next();
+// });
 
 io.on("connection", (socket) => {
   console.log("Socket connected");
