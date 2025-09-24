@@ -10,7 +10,7 @@ export default function ConsolePage() {
   const term = useRef<Terminal | null>(null);
   const socket = useRef<ReturnType<typeof io> | null>(null);
   const fitAddon = useRef<FitAddon | null>(null);
-  const buffer = useRef<string>(""); // Buffer to collect full input
+  const buffer = useRef<string>(""); // Buffer for full command
 
   useEffect(() => {
     let isMounted = true;
@@ -30,6 +30,7 @@ export default function ConsolePage() {
         },
         fontSize: 16,
         scrollback: 1000,
+        cursorStyle: "block", // Clear cursor style for better visibility
       });
       fitAddon.current = new FitAddon();
       term.current.loadAddon(fitAddon.current);
@@ -45,23 +46,26 @@ export default function ConsolePage() {
       });
 
       socket.current.on("connect", () => {
-        term.current?.write("Connected to VPS...$ ");
+        term.current?.clear(); // Clear terminal on connect
+        term.current?.write("Connected to VPS...$ "); // Single line prompt
       });
 
       socket.current.on("output", (data: string) => {
-        const cleanedData = data.replace(/^\n+|\n+$/g, "");
-        term.current?.write(cleanedData);
+        const cleanedData = data.replace(/^\n+|\n+$/g, "").trim();
+        if (cleanedData) {
+          term.current?.write(
+            cleanedData + (cleanedData.endsWith("$") ? "" : "\n$ ")
+          );
+        }
       });
 
       term.current.onData((data: string) => {
         if (data === "\r" || data === "\n") {
           if (buffer.current.trim().length > 0) {
-            console.log("Sending full command:", buffer.current.trim());
             socket.current?.emit("input", buffer.current.trim() + "\n");
-            buffer.current = ""; // Clear buffer after sending
-            term.current?.write("\n$ "); // Move to new prompt
+            buffer.current = ""; // Clear buffer
           }
-        } else if (data.length > 0) {
+        } else if (data.length > 0 && !data.match(/[\r\n]/)) {
           buffer.current += data;
           term.current?.write(data); // Echo input locally
         }
