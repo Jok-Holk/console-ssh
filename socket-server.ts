@@ -14,19 +14,12 @@ const io = new SocketServer(server, {
     credentials: true,
   },
 });
-io.engine.on("initial_headers", (headers, req) => {
-  console.log("Initial headers:", headers);
-});
-
-io.engine.on("headers", (headers, req) => {
-  console.log("Headers:", headers);
-});
 io.engine.on("connection_error", (err) => {
-  console.log("Connection error:", err.req?.url, err.message);
+  console.log("Connection error:", err.req?.url, err.message, err.context);
 });
 
 io.use((socket, next) => {
-  console.log("Middleware triggered");
+  console.log("Middleware triggered", socket.handshake);
   const token = socket.handshake.auth.token;
   console.log("Auth attempt:", token);
   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
