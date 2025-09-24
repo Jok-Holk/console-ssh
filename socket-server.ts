@@ -16,13 +16,14 @@ const io = new SocketServer(server, {
 });
 
 io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
+  const cookie = socket.handshake.headers.cookie;
+  const tokenMatch = cookie?.match(/authToken=([^;]+)/);
+  const token = tokenMatch ? tokenMatch[1] : null;
   console.log("Auth attempt:", token);
   if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {}))
     return next(new Error("Unauthorized"));
   next();
 });
-
 io.on("connection", (socket) => {
   console.log("Socket connected");
   const ssh = new Client();
