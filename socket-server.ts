@@ -15,15 +15,22 @@ const io = new SocketServer(server, {
   },
 });
 
+io.engine.on("connection_error", (err) => {
+  console.log("Connection error:", err.req?.url, err.message);
+});
+
 io.use((socket, next) => {
   const cookie = socket.handshake.headers.cookie;
   const tokenMatch = cookie?.match(/authToken=([^;]+)/);
   const token = tokenMatch ? tokenMatch[1] : null;
   console.log("Auth attempt:", token);
-  if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {}))
+  if (!token || !jwt.verify(token, process.env.JWT_SECRET!, {})) {
+    console.log("Auth failed");
     return next(new Error("Unauthorized"));
+  }
   next();
 });
+
 io.on("connection", (socket) => {
   console.log("Socket connected");
   const ssh = new Client();
