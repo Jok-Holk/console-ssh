@@ -9,7 +9,7 @@ const redis = new Redis(process.env.REDIS_URL!);
 
 export async function loginAction(
   prevState: { error: string } | null,
-  formData: FormData
+  formData: FormData,
 ) {
   const key = formData.get("key") as string;
   const pass = formData.get("pass") as string;
@@ -28,5 +28,5 @@ export async function loginAction(
     secure: process.env.NODE_ENV === "production",
     maxAge: 3600,
   });
-  redirect("/console");
+  redirect("/dashboard");
 }

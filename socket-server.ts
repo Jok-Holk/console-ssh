@@ -3,6 +3,7 @@ import { createServer } from "https";
 import { Server as SocketServer } from "socket.io";
 import { readFileSync } from "fs";
 import { Client } from "ssh2";
+import jwt from "jsonwebtoken";
 
 const port = 3001;
 const httpsServer = createServer({
@@ -18,6 +19,16 @@ const io = new SocketServer(httpsServer, {
   },
   path: "/socket.io/",
 });
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error("No token"));
+  try {
+    jwt.verify(token, process.env.JWT_SECRET!);
+    next();
+  } catch {
+    next(new Error("Invalid token"));
+  }
+});
 
 io.on("connection", (socket) => {
   const ssh = new Client();
@@ -28,9 +39,6 @@ io.on("connection", (socket) => {
           term: "xterm-256color",
           rows: 24,
           cols: 80,
-          modes: {
-            ECHO: 0,
-          },
         },
         (err: any, stream: any) => {
           if (err) return socket.disconnect();
@@ -44,11 +52,11 @@ io.on("connection", (socket) => {
           socket.on(
             "resize",
             ({ cols, rows }: { cols: number; rows: number }) => {
-              stream.setWindow(cols, rows, 0, 0);
-            }
+              stream.setWindow(rows, cols, 0, 0);
+            },
           );
-          stream.setWindow(80, 24, 0, 0);
-        }
+          stream.setWindow(24, 80, 0, 0);
+        },
       );
     })
     .on("error", () => {})
@@ -62,5 +70,5 @@ io.on("connection", (socket) => {
 });
 
 httpsServer.listen(port, "0.0.0.0", () =>
-  console.log(`Socket.io on https://localhost:${port}`)
+  console.log(`Socket.io on https://localhost:${port}`),
 );

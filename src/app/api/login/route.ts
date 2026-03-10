@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
   if (!storedHash) {
     return NextResponse.json(
       { error: "Invalid or expired key" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
@@ -37,5 +37,6 @@ export async function POST(request: NextRequest) {
     secure: process.env.NODE_ENV === "production",
     maxAge: 3600,
   });
+  response.headers.set("x-redirect", "/dashboard");
   return response;
 }

@@ -36,12 +36,13 @@ export default function ConsolePage() {
       const token =
         document.cookie.split("authToken=")[1]?.split(";")[0] ||
         "default-token";
-      socket.current = io("wss://console.jokholk.dev:3001", {
+      const wsUrl =
+        process.env.NEXT_PUBLIC_WS_URL ?? "wss://console.jokholk.dev:3001";
+      socket.current = io(wsUrl, {
+        path: "/socket.io/",
         auth: (cb) => cb({ token }),
       });
-      socket.current.on("connect", () => {
-        // Removed clear to avoid potential garbling
-      });
+      socket.current.on("connect", () => {});
       socket.current.on("output", (data: string) => {
         term.current?.write(data);
       });
