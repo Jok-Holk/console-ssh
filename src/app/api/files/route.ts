@@ -31,7 +31,8 @@ function authCheck(request: NextRequest) {
 
 // Validate path — Do not allow traverse outside the home.
 function safePath(p: string): string {
-  const base = `/home/${process.env.VPS_USER}`;
+  const user = process.env.VPS_USER;
+  const base = user === "root" ? "/root" : `/home/${user}`;
   const resolved = p.startsWith("/") ? p : `${base}/${p}`;
   if (!resolved.startsWith(base)) return base;
   return resolved;

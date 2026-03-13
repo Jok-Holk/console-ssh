@@ -1,17 +1,14 @@
 import "dotenv/config";
-import { createServer } from "https";
+import { createServer } from "http";
 import { Server as SocketServer } from "socket.io";
 import { readFileSync } from "fs";
 import { Client } from "ssh2";
 import jwt from "jsonwebtoken";
 
 const port = 3001;
-const httpsServer = createServer({
-  cert: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/fullchain.pem"),
-  key: readFileSync("/etc/letsencrypt/live/console.jokholk.dev/privkey.pem"),
-});
+const httpServer = createServer();
 
-const io = new SocketServer(httpsServer, {
+const io = new SocketServer(httpServer, {
   cors: {
     origin: ["https://console.jokholk.dev", "http://localhost:3000"],
     methods: ["GET", "POST"],
@@ -21,11 +18,14 @@ const io = new SocketServer(httpsServer, {
 });
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
+  console.log("Token received:", token ? token.substring(0, 20) + "..." : "NONE");
   if (!token) return next(new Error("No token"));
   try {
     jwt.verify(token, process.env.JWT_SECRET!);
+    console.log("Token valid, connection allowed");
     next();
-  } catch {
+  } catch (e) {
+    console.log("Token invalid:", e);
     next(new Error("Invalid token"));
   }
 });
@@ -69,6 +69,6 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => ssh.end());
 });
 
-httpsServer.listen(port, "0.0.0.0", () =>
-  console.log(`Socket.io on https://localhost:${port}`),
+httpServer.listen(port, "0.0.0.0", () =>
+  console.log(`Socket.io on http://localhost:${port}`),
 );

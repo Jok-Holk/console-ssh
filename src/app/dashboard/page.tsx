@@ -601,9 +601,7 @@ function DockerView() {
 // ─── Files View ────────────────────────────────────────────────────────────────
 
 function FilesView() {
-  const [path, setPath] = useState(
-    `/home/${process.env.NEXT_PUBLIC_VPS_USER ?? "jokholk"}`,
-  );
+  const [path, setPath] = useState("/root");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);

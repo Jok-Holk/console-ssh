@@ -15,6 +15,7 @@ export default function ConsolePage() {
       if (!isMounted || !termRef.current) return;
       const XTermModule = await import("xterm");
       const FitModule = await import("@xterm/addon-fit");
+      // @ts-expect-error xterm css import
       await import("xterm/css/xterm.css");
       const { Terminal } = XTermModule;
       const { FitAddon } = FitModule;
@@ -33,9 +34,9 @@ export default function ConsolePage() {
       term.current.open(termRef.current);
       fitAddon.current.fit();
       term.current.focus();
-      const token =
-        document.cookie.split("authToken=")[1]?.split(";")[0] ||
-        "default-token";
+      const res = await fetch("/api/auth/token");
+if (!res.ok) return;
+const { token } = await res.json();
       const wsUrl =
         process.env.NEXT_PUBLIC_WS_URL ?? "wss://console.jokholk.dev:3001";
       socket.current = io(wsUrl, {
@@ -76,9 +77,14 @@ export default function ConsolePage() {
     };
   }, []);
   const logout = async () => {
-    const res = await fetch("/api/logout", { method: "POST" });
-    if (res.ok) window.location.href = "/";
-  };
+  // If inside iframe (dashboard), just go back to dashboard
+  if (window.self !== window.top) {
+    window.top!.location.href = "/dashboard";
+    return;
+  }
+  const res = await fetch("/api/logout", { method: "POST" });
+  if (res.ok) window.location.href = "/";
+};
   return (
     <div className="min-h-screen bg-black/90 flex items-center justify-center p-4">
       <div className="w-full max-w-4xl neon-purple rounded-xl overflow-auto">
