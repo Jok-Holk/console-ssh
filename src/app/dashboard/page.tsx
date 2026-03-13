@@ -15,14 +15,7 @@ interface Metrics {
   disk: { total: number; used: number; free: number; pct: number };
   uptime: string;
   load: { "1m": string; "5m": string; "15m": string };
-  network: { rx: number; tx: number };
-  processes: {
-    pid: string;
-    user: string;
-    cpu: number;
-    mem: number;
-    cmd: string;
-  }[];
+  network: { rxSec: number; txSec: number; rxTotal: number; txTotal: number };
 }
 interface Container {
   Id: string;
@@ -134,6 +127,83 @@ function Sparkline({
   );
 }
 
+// Dual-line area chart for realtime network RX/TX
+function NetworkChart({
+  rxData,
+  txData,
+}: {
+  rxData: number[];
+  txData: number[];
+}) {
+  const w = 400,
+    h = 100;
+  const max = Math.max(...rxData, ...txData, 1024); // min 1KB scale
+  const toY = (v: number) => h - (v / max) * (h - 6);
+  const toX = (i: number, len: number) => (i / Math.max(len - 1, 1)) * w;
+
+  const line = (data: number[]) =>
+    data.map((v, i) => `${toX(i, data.length)},${toY(v)}`).join(" ");
+
+  const area = (data: number[], color: string) => {
+    if (data.length < 2) return null;
+    const pts = data
+      .map((v, i) => `${toX(i, data.length)},${toY(v)}`)
+      .join(" ");
+    const first = `${toX(0, data.length)},${h}`;
+    const last = `${toX(data.length - 1, data.length)},${h}`;
+    return (
+      <polygon
+        points={`${first} ${pts} ${last}`}
+        fill={color}
+        fillOpacity={0.08}
+        stroke="none"
+      />
+    );
+  };
+
+  return (
+    <svg
+      width="100%"
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      style={{ display: "block" }}
+    >
+      {/* Grid lines */}
+      {[0.25, 0.5, 0.75, 1].map((p) => (
+        <line
+          key={p}
+          x1={0}
+          y1={h * p}
+          x2={w}
+          y2={h * p}
+          stroke="rgba(255,255,255,0.04)"
+          strokeWidth={1}
+        />
+      ))}
+      {area(rxData, "#4ade80")}
+      {area(txData, "#a855f7")}
+      {rxData.length >= 2 && (
+        <polyline
+          points={line(rxData)}
+          fill="none"
+          stroke="#4ade80"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+        />
+      )}
+      {txData.length >= 2 && (
+        <polyline
+          points={line(txData)}
+          fill="none"
+          stroke="#a855f7"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+        />
+      )}
+    </svg>
+  );
+}
+
 function StatusDot({ status }: { status: string }) {
   const isOnline = ["online", "running", "up"].includes(status.toLowerCase());
   const color = isOnline ? "#4ade80" : "#f87171";
@@ -160,6 +230,8 @@ export default function DashboardPage() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [cpuHistory, setCpuHistory] = useState<number[]>([]);
   const [ramHistory, setRamHistory] = useState<number[]>([]);
+  const [rxHistory, setRxHistory] = useState<number[]>([]);
+  const [txHistory, setTxHistory] = useState<number[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [pm2List, setPm2List] = useState<PM2Process[]>([]);
   const [pm2Logs, setPm2Logs] = useState<{
@@ -175,10 +247,9 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
 
-  const sseRef = useRef<EventSource | null>(null);
   const logsEventRef = useRef<EventSource | null>(null);
 
-  // ── Auth redirect ──
+  // Redirect to login on 401
   const authFetch = useCallback(async (url: string, opts?: RequestInit) => {
     const res = await fetch(url, opts);
     if (res.status === 401) {
@@ -188,24 +259,38 @@ export default function DashboardPage() {
     return res;
   }, []);
 
-  // ── Metrics SSE ──
+  // Metrics SSE stream — redirect to login on auth failure
   useEffect(() => {
-    const es = new EventSource("/api/metrics");
-    sseRef.current = es;
-    es.onopen = () => setConnected(true);
-    es.onmessage = (e) => {
-      const data: Metrics = JSON.parse(e.data);
-      if (data && !("error" in data)) {
-        setMetrics(data);
-        setCpuHistory((h) => [...h.slice(-29), data.cpu]);
-        setRamHistory((h) => [...h.slice(-29), data.ram.pct]);
+    // Pre-check auth before opening SSE
+    fetch("/api/auth/token").then((r) => {
+      if (!r.ok) {
+        window.location.href = "/";
+        return;
       }
-    };
-    es.onerror = () => setConnected(false);
-    return () => es.close();
+
+      const es = new EventSource("/api/metrics");
+      es.onopen = () => setConnected(true);
+      es.onmessage = (e) => {
+        const data: Metrics = JSON.parse(e.data);
+        if (data && !("error" in data)) {
+          setMetrics(data);
+          setCpuHistory((h) => [...h.slice(-29), data.cpu]);
+          setRamHistory((h) => [...h.slice(-29), data.ram.pct]);
+          setRxHistory((h) => [...h.slice(-29), data.network.rxSec]);
+          setTxHistory((h) => [...h.slice(-29), data.network.txSec]);
+        }
+      };
+      es.onerror = () => {
+        setConnected(false);
+        // Check if session expired
+        fetch("/api/auth/token").then((r) => {
+          if (!r.ok) window.location.href = "/";
+        });
+      };
+      return () => es.close();
+    });
   }, []);
 
-  // ── Docker fetch ──
   const fetchDocker = useCallback(async () => {
     const res = await authFetch("/api/docker");
     if (!res) return;
@@ -222,7 +307,6 @@ export default function DashboardPage() {
     fetchDocker();
   };
 
-  // ── PM2 fetch ──
   const fetchPm2 = useCallback(async () => {
     const res = await authFetch("/api/pm2");
     if (!res) return;
@@ -253,7 +337,6 @@ export default function DashboardPage() {
     es.onerror = () => es.close();
   };
 
-  // ── Files fetch ──
   const fetchFiles = useCallback(
     async (path: string) => {
       setLoading(true);
@@ -275,25 +358,23 @@ export default function DashboardPage() {
       `/api/files?path=${encodeURIComponent(path)}&view=1`,
     );
     if (!res) return;
-    const text = await res.text();
-    setFileContent({ name, content: text });
+    setFileContent({ name, content: await res.text() });
   };
 
-  const downloadFile = (path: string) => {
+  const downloadFile = (path: string) =>
     window.open(`/api/files?path=${encodeURIComponent(path)}&download=1`);
-  };
-
-  const downloadZip = (path: string) => {
+  const downloadZip = (path: string) =>
     window.open(`/api/files?path=${encodeURIComponent(path)}&zip=1`);
-  };
 
-  // ── Tab switch side effects ──
+  // Fetch data when switching tabs
   useEffect(() => {
     if (tab === "docker") fetchDocker();
     if (tab === "pm2") fetchPm2();
     if (tab === "files") fetchFiles(filePath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  // Poll docker/pm2 every 10s when on those tabs
   useEffect(() => {
     const t = setInterval(() => {
       if (tab === "docker") fetchDocker();
@@ -307,7 +388,7 @@ export default function DashboardPage() {
     window.location.href = "/";
   };
 
-  // ─── Styles ───
+  // ─── Styles ───────────────────────────────────────────────────────────────
   const s = {
     bg: "#06060f",
     surface: "rgba(255,255,255,0.025)",
@@ -339,7 +420,6 @@ export default function DashboardPage() {
     { id: "files", icon: "⊟", label: "Files" },
   ] as const;
 
-  // ─── Render ───
   return (
     <div
       style={{
@@ -389,7 +469,6 @@ export default function DashboardPage() {
             {process.env.NEXT_PUBLIC_VPS_HOST}
           </div>
         </div>
-
         <nav style={{ flex: 1, padding: "8px 0" }}>
           {tabs.map((t) => (
             <button
@@ -419,7 +498,6 @@ export default function DashboardPage() {
             </button>
           ))}
         </nav>
-
         <div
           style={{ padding: "12px 16px", borderTop: `1px solid ${s.border}` }}
         >
@@ -474,7 +552,6 @@ export default function DashboardPage() {
           overflow: "hidden",
         }}
       >
-        {/* Header */}
         <header
           style={{
             padding: "14px 20px",
@@ -521,7 +598,6 @@ export default function DashboardPage() {
           )}
         </header>
 
-        {/* Content */}
         <div
           style={{
             flex: 1,
@@ -529,7 +605,7 @@ export default function DashboardPage() {
             padding: tab === "terminal" ? 0 : 16,
           }}
         >
-          {/* ── HOME ── */}
+          {/* HOME */}
           {tab === "home" && (
             <div
               style={{
@@ -586,7 +662,6 @@ export default function DashboardPage() {
                   <Bar pct={item.value} />
                 </div>
               ))}
-
               <div style={{ ...card(), gridColumn: "1 / 3" }}>
                 <div
                   style={{
@@ -607,8 +682,14 @@ export default function DashboardPage() {
                       : "—",
                   ],
                   ["IP", process.env.NEXT_PUBLIC_VPS_HOST ?? "—"],
-                  ["Network RX", metrics ? fmt(metrics.network.rx) : "—"],
-                  ["Network TX", metrics ? fmt(metrics.network.tx) : "—"],
+                  [
+                    "Network ↓",
+                    metrics ? fmt(metrics.network.rxSec) + "/s" : "—",
+                  ],
+                  [
+                    "Network ↑",
+                    metrics ? fmt(metrics.network.txSec) + "/s" : "—",
+                  ],
                 ].map(([k, v]) => (
                   <div
                     key={k}
@@ -621,11 +702,10 @@ export default function DashboardPage() {
                     }}
                   >
                     <span style={{ color: s.muted }}>{k}</span>
-                    <span style={{ color: s.text }}>{v}</span>
+                    <span>{v}</span>
                   </div>
                 ))}
               </div>
-
               <div style={card()}>
                 <div
                   style={{
@@ -675,8 +755,6 @@ export default function DashboardPage() {
                   ))
                 )}
               </div>
-
-              {/* Quick nav cards */}
               {(
                 [
                   {
@@ -743,7 +821,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* ── TERMINAL ── */}
+          {/* TERMINAL */}
           {tab === "terminal" && (
             <iframe
               src="/console"
@@ -757,7 +835,7 @@ export default function DashboardPage() {
             />
           )}
 
-          {/* ── MONITOR ── */}
+          {/* MONITOR */}
           {tab === "monitor" && metrics && (
             <div
               style={{
@@ -873,7 +951,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Disk */}
+              {/* DISK */}
               <div style={card()}>
                 <div
                   style={{
@@ -904,7 +982,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Network */}
+              {/* Network stats */}
               <div style={card()}>
                 <div
                   style={{
@@ -914,138 +992,118 @@ export default function DashboardPage() {
                     marginBottom: 10,
                   }}
                 >
-                  NETWORK (cumulative)
+                  NETWORK
                 </div>
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr",
                     gap: 8,
+                    marginBottom: 8,
                   }}
                 >
                   <div
                     style={{
-                      textAlign: "center",
-                      padding: "10px 0",
-                      background: "rgba(0,0,0,0.2)",
+                      padding: "10px",
+                      background: "rgba(0,0,0,0.25)",
                       borderRadius: 8,
+                      textAlign: "center",
                     }}
                   >
                     <div
                       style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
                     >
-                      ↓ RX
+                      ↓ DOWNLOAD
                     </div>
-                    <div style={{ fontSize: 16, color: s.green }}>
-                      {fmt(metrics.network.rx)}
+                    <div
+                      style={{ fontSize: 18, fontWeight: 700, color: s.green }}
+                    >
+                      {fmt(metrics.network.rxSec)}/s
+                    </div>
+                    <div style={{ fontSize: 9, color: s.muted, marginTop: 2 }}>
+                      total: {fmt(metrics.network.rxTotal)}
                     </div>
                   </div>
                   <div
                     style={{
-                      textAlign: "center",
-                      padding: "10px 0",
-                      background: "rgba(0,0,0,0.2)",
+                      padding: "10px",
+                      background: "rgba(0,0,0,0.25)",
                       borderRadius: 8,
+                      textAlign: "center",
                     }}
                   >
                     <div
                       style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
                     >
-                      ↑ TX
+                      ↑ UPLOAD
                     </div>
-                    <div style={{ fontSize: 16, color: s.purple }}>
-                      {fmt(metrics.network.tx)}
+                    <div
+                      style={{ fontSize: 18, fontWeight: 700, color: s.purple }}
+                    >
+                      {fmt(metrics.network.txSec)}/s
+                    </div>
+                    <div style={{ fontSize: 9, color: s.muted, marginTop: 2 }}>
+                      total: {fmt(metrics.network.txTotal)}
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Top Processes */}
+              {/* Network realtime chart — full width */}
               <div style={{ ...card(), gridColumn: "1 / 3" }}>
                 <div
                   style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: s.muted,
+                      letterSpacing: "0.14em",
+                    }}
+                  >
+                    NETWORK BANDWIDTH (realtime)
+                  </span>
+                  <div style={{ display: "flex", gap: 14, fontSize: 10 }}>
+                    <span style={{ color: s.green }}>
+                      ● ↓ {fmt(metrics.network.rxSec)}/s
+                    </span>
+                    <span style={{ color: s.purple }}>
+                      ● ↑ {fmt(metrics.network.txSec)}/s
+                    </span>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    background: "rgba(0,0,0,0.25)",
+                    borderRadius: 8,
+                    padding: "8px 4px",
+                    height: 110,
+                  }}
+                >
+                  <NetworkChart rxData={rxHistory} txData={txHistory} />
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginTop: 6,
                     fontSize: 9,
                     color: s.muted,
-                    letterSpacing: "0.14em",
-                    marginBottom: 10,
                   }}
                 >
-                  TOP PROCESSES
+                  <span>90s ago</span>
+                  <span>now</span>
                 </div>
-                <table
-                  style={{
-                    width: "100%",
-                    borderCollapse: "collapse",
-                    fontSize: 11,
-                  }}
-                >
-                  <thead>
-                    <tr style={{ color: s.muted, fontSize: 9 }}>
-                      {["PID", "USER", "CPU%", "MEM%", "COMMAND"].map((h) => (
-                        <th
-                          key={h}
-                          style={{
-                            textAlign: "left",
-                            padding: "4px 8px",
-                            letterSpacing: "0.1em",
-                          }}
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {metrics.processes.map((p, i) => (
-                      <tr
-                        key={i}
-                        style={{
-                          borderTop: `1px solid rgba(255,255,255,0.04)`,
-                        }}
-                      >
-                        <td style={{ padding: "5px 8px", color: s.muted }}>
-                          {p.pid}
-                        </td>
-                        <td style={{ padding: "5px 8px", color: s.cyan }}>
-                          {p.user}
-                        </td>
-                        <td
-                          style={{
-                            padding: "5px 8px",
-                            color: p.cpu > 50 ? s.red : s.text,
-                          }}
-                        >
-                          {p.cpu.toFixed(1)}
-                        </td>
-                        <td
-                          style={{
-                            padding: "5px 8px",
-                            color: p.mem > 20 ? s.amber : s.text,
-                          }}
-                        >
-                          {p.mem.toFixed(1)}
-                        </td>
-                        <td
-                          style={{
-                            padding: "5px 8px",
-                            fontFamily: s.mono,
-                            overflow: "hidden",
-                            maxWidth: 300,
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {p.cmd}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
             </div>
           )}
 
-          {/* ── DOCKER ── */}
+          {/* DOCKER */}
           {tab === "docker" && (
             <div style={card()}>
               <div
@@ -1141,7 +1199,6 @@ export default function DashboardPage() {
                             fontFamily: s.mono,
                             fontSize: 9,
                             cursor: "pointer",
-                            letterSpacing: "0.06em",
                           }}
                         >
                           {action}
@@ -1154,7 +1211,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* ── PM2 ── */}
+          {/* PM2 */}
           {tab === "pm2" && (
             <div
               style={{
@@ -1315,8 +1372,6 @@ export default function DashboardPage() {
                   ))
                 )}
               </div>
-
-              {/* PM2 Logs panel */}
               {pm2Logs && (
                 <div
                   style={{
@@ -1395,7 +1450,7 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* ── FILES ── */}
+          {/* FILES */}
           {tab === "files" && (
             <div
               style={{
@@ -1413,7 +1468,6 @@ export default function DashboardPage() {
                   overflow: "hidden",
                 }}
               >
-                {/* Path bar */}
                 <div
                   style={{
                     display: "flex",
@@ -1426,7 +1480,7 @@ export default function DashboardPage() {
                     .split("/")
                     .filter(Boolean)
                     .map((seg, i, arr) => {
-                      const path = "/" + arr.slice(0, i + 1).join("/");
+                      const p = "/" + arr.slice(0, i + 1).join("/");
                       return (
                         <span
                           key={i}
@@ -1438,7 +1492,7 @@ export default function DashboardPage() {
                         >
                           {i > 0 && <span style={{ color: s.muted }}>/</span>}
                           <button
-                            onClick={() => fetchFiles(path)}
+                            onClick={() => fetchFiles(p)}
                             style={{
                               background: "none",
                               border: "none",
@@ -1471,8 +1525,6 @@ export default function DashboardPage() {
                     ↓ zip folder
                   </button>
                 </div>
-
-                {/* File list */}
                 <div style={{ flex: 1, overflow: "auto" }}>
                   {loading ? (
                     <div
@@ -1612,8 +1664,6 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
-
-              {/* File viewer */}
               {fileContent && (
                 <div
                   style={{
