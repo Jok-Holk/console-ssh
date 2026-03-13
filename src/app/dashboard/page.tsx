@@ -127,7 +127,8 @@ function Sparkline({
   );
 }
 
-// Shared scale chart with min floor so small values still visible
+// Dual-scale chart: each line scales independently but TX is clamped to min 25% height
+// This makes both lines clearly visible even when one value is much larger
 function NetworkChart({
   rxData,
   txData,
@@ -136,35 +137,34 @@ function NetworkChart({
   txData: number[];
 }) {
   const w = 400,
-    h = 60;
-  const max = Math.max(...rxData, ...txData, 1024) * 1.1;
-  const toX = (i: number, len: number) => (i / Math.max(len - 1, 1)) * w;
-  const toY = (v: number) => h - 2 - (v / max) * (h - 4);
+    h = 60,
+    pad = 4;
+  const usable = h - pad * 2;
 
-  const path = (data: number[]) => {
-    if (data.length < 2) return "";
-    return data
-      .map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i, data.length)} ${toY(v)}`)
-      .join(" ");
+  const scaleLine = (data: number[], minPct = 0) => {
+    if (data.length < 2) return [];
+    const max = Math.max(...data, 1);
+    const min = Math.min(...data);
+    const range = Math.max(max - min, 1);
+    return data.map((v, i) => {
+      const norm = (v - min) / range; // 0–1 within its own range
+      // Map to [minPct .. 1] of usable height, then invert (SVG y is top-down)
+      const y = pad + usable * (1 - (minPct + norm * (1 - minPct)));
+      return { x: (i / Math.max(data.length - 1, 1)) * w, y };
+    });
   };
-  const area = (data: number[], stopColor: string) => {
-    if (data.length < 2) return null;
-    const id = `grad-${stopColor.replace("#", "")}`;
-    const pts = data
-      .map((v, i) => `${toX(i, data.length)} ${toY(v)}`)
-      .join(" L ");
-    const d = `M ${toX(0, data.length)} ${h} L ${pts} L ${toX(data.length - 1, data.length)} ${h} Z`;
-    return (
-      <>
-        <defs>
-          <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={stopColor} stopOpacity="0.3" />
-            <stop offset="100%" stopColor={stopColor} stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={d} fill={`url(#${id})`} />
-      </>
-    );
+
+  const rxPts = scaleLine(rxData, 0.1);
+  const txPts = scaleLine(txData, 0.25); // TX always uses at least 25% of height
+
+  const linePath = (pts: { x: number; y: number }[]) =>
+    pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+
+  const areaPath = (pts: { x: number; y: number }[]) => {
+    if (!pts.length) return "";
+    const l = pts[pts.length - 1];
+    const f = pts[0];
+    return `${linePath(pts)} L${l.x},${h} L${f.x},${h} Z`;
   };
 
   return (
@@ -175,6 +175,16 @@ function NetworkChart({
       preserveAspectRatio="none"
       style={{ display: "block" }}
     >
+      <defs>
+        <linearGradient id="gRx" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#4ade80" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="#4ade80" stopOpacity="0.02" />
+        </linearGradient>
+        <linearGradient id="gTx" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#a855f7" stopOpacity="0.25" />
+          <stop offset="100%" stopColor="#a855f7" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
       {[0.33, 0.66].map((p) => (
         <line
           key={p}
@@ -186,22 +196,26 @@ function NetworkChart({
           strokeWidth={1}
         />
       ))}
-      {area(rxData, "#4ade80")}
-      {area(txData, "#a855f7")}
-      <path
-        d={path(rxData)}
-        fill="none"
-        stroke="#4ade80"
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-      />
-      <path
-        d={path(txData)}
-        fill="none"
-        stroke="#a855f7"
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-      />
+      {rxPts.length > 1 && <path d={areaPath(rxPts)} fill="url(#gRx)" />}
+      {txPts.length > 1 && <path d={areaPath(txPts)} fill="url(#gTx)" />}
+      {rxPts.length > 1 && (
+        <path
+          d={linePath(rxPts)}
+          fill="none"
+          stroke="#4ade80"
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
+      )}
+      {txPts.length > 1 && (
+        <path
+          d={linePath(txPts)}
+          fill="none"
+          stroke="#a855f7"
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
+      )}
     </svg>
   );
 }
@@ -261,36 +275,57 @@ export default function DashboardPage() {
     return res;
   }, []);
 
-  // Metrics SSE stream — redirect to login on auth failure
+  // Metrics SSE stream with auto-reconnect — redirect to login on auth failure
   useEffect(() => {
-    // Pre-check auth before opening SSE
-    fetch("/api/auth/token").then((r) => {
-      if (!r.ok) {
-        window.location.href = "/";
-        return;
-      }
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
 
-      const es = new EventSource("/api/metrics");
-      es.onopen = () => setConnected(true);
-      es.onmessage = (e) => {
-        const data: Metrics = JSON.parse(e.data);
-        if (data && !("error" in data)) {
-          setMetrics(data);
-          setCpuHistory((h) => [...h.slice(-29), data.cpu]);
-          setRamHistory((h) => [...h.slice(-29), data.ram.pct]);
-          setRxHistory((h) => [...h.slice(-29), data.network.rxSec]);
-          setTxHistory((h) => [...h.slice(-29), data.network.txSec]);
+    const connect = () => {
+      if (!active) return;
+      fetch("/api/auth/token").then((r) => {
+        if (!r.ok) {
+          window.location.href = "/";
+          return;
         }
-      };
-      es.onerror = () => {
-        setConnected(false);
-        // Check if session expired
-        fetch("/api/auth/token").then((r) => {
-          if (!r.ok) window.location.href = "/";
-        });
-      };
-      return () => es.close();
-    });
+
+        es = new EventSource("/api/metrics");
+
+        es.onopen = () => setConnected(true);
+
+        es.onmessage = (e) => {
+          const data: Metrics = JSON.parse(e.data);
+          if (data && !("error" in data)) {
+            setMetrics(data);
+            setCpuHistory((h) => [...h.slice(-29), data.cpu]);
+            setRamHistory((h) => [...h.slice(-29), data.ram.pct]);
+            setRxHistory((h) => [...h.slice(-29), data.network.rxSec]);
+            setTxHistory((h) => [...h.slice(-29), data.network.txSec]);
+          }
+        };
+
+        es.onerror = () => {
+          setConnected(false);
+          es?.close();
+          // Check if auth expired, else retry in 3s
+          fetch("/api/auth/token").then((r) => {
+            if (!r.ok) {
+              window.location.href = "/";
+              return;
+            }
+            if (active) reconnectTimer = setTimeout(connect, 3000);
+          });
+        };
+      });
+    };
+
+    connect();
+
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+    };
   }, []);
 
   const fetchDocker = useCallback(async () => {
@@ -433,6 +468,65 @@ export default function DashboardPage() {
         overflow: "hidden",
       }}
     >
+      {/* Offline overlay — shown when SSE disconnects */}
+      {!connected && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(6,6,15,0.85)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+          }}
+        >
+          <div style={{ fontSize: 36 }}>⚡</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: s.red }}>
+            Connection Lost
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: s.muted,
+              textAlign: "center",
+              lineHeight: 1.8,
+            }}
+          >
+            Cannot reach server metrics stream.
+            <br />
+            Attempting to reconnect...
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              marginTop: 8,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                background: s.red,
+                display: "inline-block",
+                animation: "pulse 1.5s infinite",
+              }}
+            />
+            <span
+              style={{ fontSize: 10, color: s.muted, letterSpacing: "0.1em" }}
+            >
+              OFFLINE
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside
         style={{
@@ -519,10 +613,17 @@ export default function DashboardPage() {
                 background: connected ? s.green : s.red,
                 boxShadow: `0 0 6px ${connected ? s.green : s.red}`,
                 display: "inline-block",
+                animation: connected ? "none" : "pulse 1.5s infinite",
               }}
             />
-            <span style={{ fontSize: 9, color: s.muted }}>
-              {connected ? "Connected" : "Disconnected"}
+            <span
+              style={{
+                fontSize: 9,
+                color: connected ? s.green : s.red,
+                letterSpacing: "0.08em",
+              }}
+            >
+              {connected ? "Connected" : "Offline"}
             </span>
           </div>
           <button
@@ -552,6 +653,7 @@ export default function DashboardPage() {
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
+          position: "relative",
         }}
       >
         <header
@@ -826,7 +928,7 @@ export default function DashboardPage() {
 
           {/* TERMINAL */}
           {tab === "terminal" && (
-            <div style={{ position: "absolute", inset: 0, top: 49 }}>
+            <div style={{ position: "absolute", inset: 0 }}>
               <iframe
                 src="/console"
                 style={{
