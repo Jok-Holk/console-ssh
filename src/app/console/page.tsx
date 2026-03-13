@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import io from "socket.io-client";
 import type { Terminal } from "xterm";
 import type { FitAddon } from "@xterm/addon-fit";
+
 type ResizeEvent = { cols: number; rows: number };
 
 export default function ConsolePage() {
@@ -25,30 +26,12 @@ export default function ConsolePage() {
 
       term.current = new Terminal({
         cursorBlink: true,
-        // Disable local echo — SSH server handles all echo
-        disableStdin: false,
         theme: {
           background: "#080812",
           foreground: "#e0e0ff",
           cursor: "#a855f7",
           cursorAccent: "#080812",
           selectionBackground: "rgba(168,85,247,0.3)",
-          black: "#080812",
-          brightBlack: "#4a4a6a",
-          red: "#f87171",
-          brightRed: "#fca5a5",
-          green: "#4ade80",
-          brightGreen: "#86efac",
-          yellow: "#f59e0b",
-          brightYellow: "#fcd34d",
-          blue: "#818cf8",
-          brightBlue: "#a5b4fc",
-          magenta: "#a855f7",
-          brightMagenta: "#c084fc",
-          cyan: "#22d3ee",
-          brightCyan: "#67e8f9",
-          white: "#e0e0ff",
-          brightWhite: "#ffffff",
         },
         fontSize: 14,
         fontFamily: "'Space Mono', 'Courier New', monospace",
@@ -62,15 +45,10 @@ export default function ConsolePage() {
       fitAddon.current.fit();
       term.current.focus();
 
-      // Fetch token server-side (cookie is httpOnly, can't read from JS)
+      // Fetch token server-side — cookie is httpOnly, unreadable from JS
       const res = await fetch("/api/auth/token");
       if (!res.ok) {
-        // Not authenticated — redirect to login
-        if (window.self !== window.top) {
-          window.top!.location.href = "/";
-        } else {
-          window.location.href = "/";
-        }
+        window.location.href = "/";
         return;
       }
       const { token } = await res.json();
@@ -93,12 +71,12 @@ export default function ConsolePage() {
         );
       });
 
-      // Only write output from server — no local echo
+      // Output from SSH shell — no local echo
       socket.current.on("output", (data: string) => {
         term.current?.write(data);
       });
 
-      // Send input to server only — do NOT write locally
+      // Send input to server only
       term.current.onData((data: string) => {
         socket.current?.emit("input", data);
       });
@@ -111,10 +89,21 @@ export default function ConsolePage() {
         term.current?.write("\r\n\x1b[31m● Disconnected\x1b[0m\r\n");
       });
 
-      // Handle window resize
       const handleResize = () => fitAddon.current?.fit();
       window.addEventListener("resize", handleResize);
-      return () => window.removeEventListener("resize", handleResize);
+
+      // ResizeObserver to catch container size changes (e.g. iframe load)
+      const observer = new ResizeObserver(() => fitAddon.current?.fit());
+      if (termRef.current) observer.observe(termRef.current);
+
+      // Force fit after a short delay to catch initial render
+      setTimeout(() => fitAddon.current?.fit(), 100);
+      setTimeout(() => fitAddon.current?.fit(), 500);
+
+      return () => {
+        window.removeEventListener("resize", handleResize);
+        observer.disconnect();
+      };
     })();
 
     return () => {
@@ -124,24 +113,21 @@ export default function ConsolePage() {
     };
   }, []);
 
-  const logout = async () => {
-    // If inside iframe (dashboard), redirect top window to login
-    if (window.self !== window.top) {
-      const res = await fetch("/api/logout", { method: "POST" });
-      if (res.ok) window.top!.location.href = "/";
-      return;
-    }
-    const res = await fetch("/api/logout", { method: "POST" });
-    if (res.ok) window.location.href = "/";
-  };
-
   return (
-    <div className="w-full h-full bg-[#080812] flex flex-col">
+    <div
+      style={{
+        width: "100vw",
+        height: "100vh",
+        background: "#080812",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
       <div
         ref={termRef}
-        className="flex-1 p-2"
+        style={{ flex: 1, padding: "4px 8px", minHeight: 0 }}
         onClick={() => term.current?.focus()}
-        style={{ minHeight: 0 }}
       />
     </div>
   );

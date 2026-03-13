@@ -149,12 +149,17 @@ export async function GET(request: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
+
       const send = (data: object) => {
+        if (closed) return;
         try {
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
           );
-        } catch {}
+        } catch {
+          closed = true;
+        }
       };
 
       // First sample
@@ -164,11 +169,16 @@ export async function GET(request: NextRequest) {
         send(result.data);
       } catch (err) {
         send({ error: String(err) });
+        closed = true;
         controller.close();
         return;
       }
 
       const interval = setInterval(async () => {
+        if (closed) {
+          clearInterval(interval);
+          return;
+        }
         try {
           const result = await collectMetrics(prevNet);
           prevNet = result.nextNet;
@@ -177,8 +187,11 @@ export async function GET(request: NextRequest) {
       }, 3000);
 
       request.signal.addEventListener("abort", () => {
+        closed = true;
         clearInterval(interval);
-        controller.close();
+        try {
+          controller.close();
+        } catch {}
       });
     },
   });
