@@ -3,10 +3,9 @@ import type { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
 
 export function middleware(request: NextRequest) {
-  const protected_paths = ["/dashboard", "/console"];
-  const isProtected = protected_paths.some((p) =>
-    request.nextUrl.pathname.startsWith(p),
-  );
+  const { pathname } = request.nextUrl;
+  const isProtected =
+    pathname.startsWith("/console") || pathname.startsWith("/dashboard");
 
   if (isProtected) {
     const token = request.cookies.get("authToken")?.value;
@@ -16,12 +15,16 @@ export function middleware(request: NextRequest) {
     try {
       jwt.verify(token, process.env.JWT_SECRET!);
     } catch {
-      return NextResponse.redirect(new URL("/", request.url));
+      // Token invalid or expired — clear cookie and redirect
+      const response = NextResponse.redirect(new URL("/", request.url));
+      response.cookies.delete("authToken");
+      return response;
     }
   }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/console/:path*"],
+  matcher: ["/console/:path*", "/dashboard/:path*"],
 };

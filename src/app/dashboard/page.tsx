@@ -1,1617 +1,1679 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type Metrics = {
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface Metrics {
   cpu: number;
-  ram: number;
-  disk: number;
+  ram: {
+    total: number;
+    used: number;
+    free: number;
+    buffers: number;
+    cached: number;
+    pct: number;
+  };
+  disk: { total: number; used: number; free: number; pct: number };
   uptime: string;
-  load: string;
-};
-
-type Container = {
-  id: string;
+  load: { "1m": string; "5m": string; "15m": string };
+  network: { rx: number; tx: number };
+  processes: {
+    pid: string;
+    user: string;
+    cpu: number;
+    mem: number;
+    cmd: string;
+  }[];
+}
+interface Container {
+  Id: string;
+  Names: string[];
+  Image: string;
+  State: string;
+  Status: string;
+}
+interface PM2Process {
+  id: number;
   name: string;
-  image: string;
-  status: string; // full status string e.g. "Up 2 hours"
-  state: string; // "running" | "exited" | "paused" etc.
-};
-
-type FileEntry = {
+  status: string;
+  cpu: number;
+  memory: number;
+  restarts: number;
+  uptime: number | null;
+  pid: number;
+  mode: string;
+}
+interface FileEntry {
   name: string;
-  type: "file" | "dir";
+  type: "dir" | "file";
   size: number;
   modified: string;
-};
+  viewable: boolean;
+}
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function fmt(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)}GB`;
+}
+function fmtKB(kb: number): string {
+  return fmt(kb * 1024);
+}
+function fmtUptime(ms: number | null): string {
+  if (!ms) return "—";
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
 
-const NAV_ITEMS = [
-  { id: "dashboard", label: "Dashboard", icon: "⬡" },
-  { id: "terminal", label: "Terminal", icon: "❯_" },
-  { id: "monitor", label: "Monitor", icon: "◈" },
-  { id: "docker", label: "Docker", icon: "⊡" },
-  { id: "files", label: "Files", icon: "◫" },
-];
-
-const DEFAULT_METRICS: Metrics = {
-  cpu: 0,
-  ram: 0,
-  disk: 0,
-  uptime: "—",
-  load: "—",
-};
-
-// ─── Utility components ───────────────────────────────────────────────────────
-
-function GlowBar({
-  value,
-  color = "purple",
-}: {
-  value: number;
-  color?: string;
-}) {
-  const colors: Record<string, { bar: string; glow: string; bg: string }> = {
-    purple: {
-      bar: "#a855f7",
-      glow: "rgba(168,85,247,0.5)",
-      bg: "rgba(168,85,247,0.1)",
-    },
-    cyan: {
-      bar: "#22d3ee",
-      glow: "rgba(34,211,238,0.5)",
-      bg: "rgba(34,211,238,0.1)",
-    },
-    green: {
-      bar: "#4ade80",
-      glow: "rgba(74,222,128,0.5)",
-      bg: "rgba(74,222,128,0.1)",
-    },
-    red: {
-      bar: "#f87171",
-      glow: "rgba(248,113,113,0.5)",
-      bg: "rgba(248,113,113,0.1)",
-    },
+// ─── Sub-components ───────────────────────────────────────────────────────────
+function Bar({ pct, color = "purple" }: { pct: number; color?: string }) {
+  const colors: Record<string, string> = {
+    purple: "#a855f7",
+    cyan: "#22d3ee",
+    green: "#4ade80",
+    amber: "#f59e0b",
+    red: "#f87171",
   };
-  const c = colors[color] ?? colors.purple;
+  const c =
+    pct > 85
+      ? colors.red
+      : pct > 60
+        ? colors.amber
+        : (colors[color] ?? colors.purple);
   return (
     <div
       style={{
-        background: c.bg,
+        background: "rgba(255,255,255,0.05)",
         borderRadius: 4,
         height: 6,
         overflow: "hidden",
-        width: "100%",
       }}
     >
       <div
         style={{
-          width: `${Math.min(value, 100)}%`,
+          width: `${Math.min(pct, 100)}%`,
           height: "100%",
+          background: c,
           borderRadius: 4,
-          background: c.bar,
-          boxShadow: `0 0 8px ${c.glow}`,
           transition: "width 0.8s ease",
+          boxShadow: `0 0 8px ${c}80`,
         }}
       />
     </div>
   );
 }
 
-function StatRing({
-  value,
-  label,
-  color,
-  glow,
+function Sparkline({
+  data,
+  color = "#a855f7",
 }: {
-  value: number;
-  label: string;
-  color: string;
-  glow: string;
+  data: number[];
+  color?: string;
 }) {
-  const r = 36,
-    circ = 2 * Math.PI * r;
-  const dash = circ * (1 - Math.min(value, 100) / 100);
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 6,
-      }}
-    >
-      <div style={{ position: "relative", width: 90, height: 90 }}>
-        <svg width="90" height="90" style={{ transform: "rotate(-90deg)" }}>
-          <circle
-            cx="45"
-            cy="45"
-            r={r}
-            fill="none"
-            stroke="rgba(255,255,255,0.05)"
-            strokeWidth="6"
-          />
-          <circle
-            cx="45"
-            cy="45"
-            r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth="6"
-            strokeDasharray={circ}
-            strokeDashoffset={dash}
-            strokeLinecap="round"
-            style={{
-              filter: `drop-shadow(0 0 6px ${glow})`,
-              transition: "stroke-dashoffset 0.8s ease",
-            }}
-          />
-        </svg>
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <span
-            style={{
-              fontSize: 16,
-              fontWeight: 700,
-              color,
-              fontFamily: "'Space Mono', monospace",
-            }}
-          >
-            {Math.round(value)}%
-          </span>
-        </div>
-      </div>
-      <span
-        style={{
-          fontSize: 11,
-          color: "rgba(255,255,255,0.5)",
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          fontFamily: "'Space Mono', monospace",
-        }}
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
-
-function Sparkline({ history, color }: { history: number[]; color: string }) {
-  if (history.length < 2) return null;
-  const w = 200,
-    h = 40;
-  const max = Math.max(...history, 1);
-  const pts = history.map((v, i) => ({
-    x: (i / (history.length - 1)) * w,
-    y: h - (v / max) * (h - 4) - 2,
-  }));
-  const line = pts
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+  if (data.length < 2) return null;
+  const w = 120,
+    h = 36;
+  const max = Math.max(...data, 1);
+  const pts = data
+    .map((v, i) => `${(i / (data.length - 1)) * w},${h - (v / max) * h}`)
     .join(" ");
-  const area = line + ` L ${w} ${h} L 0 ${h} Z`;
-  const gradId = `grad-${color.replace(/[^a-z0-9]/gi, "")}`;
   return (
-    <svg width={w} height={h} style={{ display: "block" }}>
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#${gradId})`} />
-      <path
-        d={line}
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+      <polyline
+        points={pts}
         fill="none"
         stroke={color}
         strokeWidth="1.5"
-        style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+        strokeLinejoin="round"
       />
     </svg>
   );
 }
 
-function TerminalView() {
+function StatusDot({ status }: { status: string }) {
+  const isOnline = ["online", "running", "up"].includes(status.toLowerCase());
+  const color = isOnline ? "#4ade80" : "#f87171";
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <iframe
-        src="/console"
-        style={{
-          flex: 1,
-          border: "none",
-          background: "#0f0f23",
-          borderRadius: 8,
-          margin: 16,
-        }}
-        title="SSH Terminal"
-      />
-    </div>
-  );
-}
-
-// ─── Monitor View ──────────────────────────────────────────────────────────────
-
-function MonitorView({
-  metrics,
-  history,
-}: {
-  metrics: Metrics;
-  history: { cpu: number[]; ram: number[]; disk: number[] };
-}) {
-  const rings = [
-    {
-      label: "CPU",
-      value: metrics.cpu,
-      color: "#a855f7",
-      glow: "rgba(168,85,247,0.6)",
-      histKey: "cpu" as const,
-    },
-    {
-      label: "RAM",
-      value: metrics.ram,
-      color: "#22d3ee",
-      glow: "rgba(34,211,238,0.6)",
-      histKey: "ram" as const,
-    },
-    {
-      label: "Disk",
-      value: metrics.disk,
-      color: "#4ade80",
-      glow: "rgba(74,222,128,0.6)",
-      histKey: "disk" as const,
-    },
-  ];
-
-  return (
-    <div
-      style={{ padding: 24, display: "flex", flexDirection: "column", gap: 24 }}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 16,
-        }}
-      >
-        {rings.map((s) => (
-          <div
-            key={s.label}
-            style={{
-              background: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 12,
-              padding: 20,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <StatRing
-              value={s.value}
-              label={s.label}
-              color={s.color}
-              glow={s.glow}
-            />
-            <Sparkline history={history[s.histKey]} color={s.color} />
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        {[
-          { label: "Uptime", value: metrics.uptime, icon: "⏱" },
-          { label: "Load Average", value: metrics.load, icon: "⚡" },
-        ].map((item) => (
-          <div
-            key={item.label}
-            style={{
-              background: "rgba(255,255,255,0.02)",
-              border: "1px solid rgba(168,85,247,0.15)",
-              borderRadius: 10,
-              padding: "14px 18px",
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <span style={{ fontSize: 20, opacity: 0.6 }}>{item.icon}</span>
-            <div>
-              <div
-                style={{
-                  fontSize: 10,
-                  color: "rgba(255,255,255,0.4)",
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                  fontFamily: "'Space Mono', monospace",
-                }}
-              >
-                {item.label}
-              </div>
-              <div
-                style={{
-                  fontSize: 13,
-                  color: "#e0e0ff",
-                  fontFamily: "'Space Mono', monospace",
-                  marginTop: 2,
-                }}
-              >
-                {item.value}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Docker View ───────────────────────────────────────────────────────────────
-
-function DockerView() {
-  const [containers, setContainers] = useState<Container[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchContainers = useCallback(async () => {
-    try {
-      const res = await fetch("/api/docker");
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      setContainers(data.containers ?? []);
-      setError(null);
-    } catch {
-      setError("Cannot connect to Docker API");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchContainers();
-    // Poll every 10 seconds to update the status.
-    const interval = setInterval(fetchContainers, 10000);
-    return () => clearInterval(interval);
-  }, [fetchContainers]);
-
-  const doAction = async (id: string, action: "start" | "stop" | "restart") => {
-    setActionLoading(`${id}-${action}`);
-    try {
-      await fetch("/api/docker", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, action }),
-      });
-      // Wait 1 second then refresh — Docker needs some time to change state.
-      await new Promise((r) => setTimeout(r, 1000));
-      await fetchContainers();
-    } catch {
-      setError("Action failed");
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  if (loading)
-    return (
-      <div
-        style={{
-          padding: 24,
-          fontFamily: "'Space Mono', monospace",
-          color: "rgba(255,255,255,0.3)",
-          fontSize: 12,
-        }}
-      >
-        Loading containers...
-      </div>
-    );
-
-  return (
-    <div style={{ padding: 24 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: "'Space Mono', monospace",
-            color: "rgba(255,255,255,0.5)",
-            fontSize: 12,
-            letterSpacing: "0.1em",
-          }}
-        >
-          {containers.filter((c) => c.state === "running").length}/
-          {containers.length} RUNNING
-        </span>
-        <button
-          onClick={fetchContainers}
-          style={{
-            padding: "6px 14px",
-            background: "rgba(168,85,247,0.1)",
-            border: "1px solid rgba(168,85,247,0.3)",
-            borderRadius: 6,
-            color: "#a855f7",
-            fontFamily: "'Space Mono', monospace",
-            fontSize: 11,
-            cursor: "pointer",
-          }}
-        >
-          ↻ Refresh
-        </button>
-      </div>
-
-      {error && (
-        <div
-          style={{
-            marginBottom: 14,
-            padding: "10px 14px",
-            background: "rgba(248,113,113,0.08)",
-            border: "1px solid rgba(248,113,113,0.25)",
-            borderRadius: 8,
-            fontFamily: "'Space Mono', monospace",
-            fontSize: 12,
-            color: "#f87171",
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {containers.map((c) => {
-          const isRunning = c.state === "running";
-          return (
-            <div
-              key={c.id}
-              style={{
-                background: "rgba(255,255,255,0.02)",
-                border: `1px solid ${isRunning ? "rgba(74,222,128,0.2)" : "rgba(255,255,255,0.06)"}`,
-                borderRadius: 10,
-                padding: "14px 18px",
-                display: "flex",
-                alignItems: "center",
-                gap: 16,
-                transition: "border-color 0.3s",
-              }}
-            >
-              <div
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: isRunning ? "#4ade80" : "#6b7280",
-                  boxShadow: isRunning
-                    ? "0 0 8px rgba(74,222,128,0.8)"
-                    : "none",
-                }}
-              />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontFamily: "'Space Mono', monospace",
-                    color: "#e0e0ff",
-                    fontSize: 13,
-                  }}
-                >
-                  {c.name}
-                </div>
-                <div
-                  style={{
-                    fontFamily: "'Space Mono', monospace",
-                    color: "rgba(255,255,255,0.35)",
-                    fontSize: 11,
-                    marginTop: 2,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {c.image}
-                </div>
-              </div>
-              <div
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 11,
-                  color: "rgba(255,255,255,0.35)",
-                  flexShrink: 0,
-                }}
-              >
-                {c.status}
-              </div>
-              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                <button
-                  disabled={!!actionLoading}
-                  onClick={() => doAction(c.id, isRunning ? "stop" : "start")}
-                  style={{
-                    padding: "5px 12px",
-                    border: "none",
-                    borderRadius: 5,
-                    cursor: actionLoading ? "wait" : "pointer",
-                    fontSize: 11,
-                    fontFamily: "'Space Mono', monospace",
-                    opacity:
-                      actionLoading ===
-                      `${c.id}-${isRunning ? "stop" : "start"}`
-                        ? 0.5
-                        : 1,
-                    background: isRunning
-                      ? "rgba(248,113,113,0.15)"
-                      : "rgba(74,222,128,0.15)",
-                    color: isRunning ? "#f87171" : "#4ade80",
-                  }}
-                >
-                  {isRunning ? "Stop" : "Start"}
-                </button>
-                <button
-                  disabled={!isRunning || !!actionLoading}
-                  onClick={() => doAction(c.id, "restart")}
-                  style={{
-                    padding: "5px 12px",
-                    background: "rgba(168,85,247,0.1)",
-                    border: "none",
-                    borderRadius: 5,
-                    color: "#a855f7",
-                    fontFamily: "'Space Mono', monospace",
-                    fontSize: 11,
-                    cursor:
-                      !isRunning || !!actionLoading ? "not-allowed" : "pointer",
-                    opacity: !isRunning ? 0.3 : 1,
-                  }}
-                >
-                  Restart
-                </button>
-              </div>
-            </div>
-          );
-        })}
-
-        {containers.length === 0 && !error && (
-          <div
-            style={{
-              padding: 24,
-              textAlign: "center",
-              fontFamily: "'Space Mono', monospace",
-              color: "rgba(255,255,255,0.25)",
-              fontSize: 12,
-            }}
-          >
-            No containers found
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Files View ────────────────────────────────────────────────────────────────
-
-function FilesView() {
-  const [path, setPath] = useState("/root");
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const pathHistory = useRef<string[]>([]);
-
-  const fetchFiles = useCallback(async (targetPath: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/files?path=${encodeURIComponent(targetPath)}`,
-      );
-      if (!res.ok) throw new Error("Failed to list directory");
-      const data = await res.json();
-      setFiles(data.files ?? []);
-      setPath(targetPath);
-      setSelected(null);
-    } catch {
-      setError("Cannot read directory");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchFiles(path);
-  }, []); // eslint-disable-line
-
-  const navigateTo = (entry: FileEntry) => {
-    if (entry.type !== "dir") return;
-    pathHistory.current.push(path);
-    fetchFiles(`${path}/${entry.name}`);
-  };
-
-  const goBack = () => {
-    const prev = pathHistory.current.pop();
-    if (prev) fetchFiles(prev);
-  };
-
-  const downloadFile = async (filename: string) => {
-    const fullPath = `${path}/${filename}`;
-    const url = `/api/files?path=${encodeURIComponent(fullPath)}&download=1`;
-    // Create a hidden link to trigger downloads.
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-
-  const uploadFile = async (file: File) => {
-    setUploading(true);
-    setError(null);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("path", path);
-      const res = await fetch("/api/files", { method: "POST", body: form });
-      if (!res.ok) throw new Error("Upload failed");
-      await fetchFiles(path); // refetch after upload
-    } catch {
-      setError("Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) await uploadFile(file);
-  };
-
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  };
-
-  return (
-    <div
+    <span
       style={{
-        padding: 24,
-        display: "flex",
-        flexDirection: "column",
-        gap: 16,
-        height: "100%",
+        display: "inline-block",
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: color,
+        boxShadow: `0 0 6px ${color}`,
+        marginRight: 6,
       }}
-    >
-      {/* Path bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button
-          onClick={goBack}
-          disabled={pathHistory.current.length === 0}
-          style={{
-            padding: "5px 10px",
-            background: "rgba(168,85,247,0.1)",
-            border: "1px solid rgba(168,85,247,0.2)",
-            borderRadius: 5,
-            color: "#a855f7",
-            cursor:
-              pathHistory.current.length === 0 ? "not-allowed" : "pointer",
-            opacity: pathHistory.current.length === 0 ? 0.4 : 1,
-            fontSize: 14,
-          }}
-        >
-          ←
-        </button>
-        <div
-          style={{
-            flex: 1,
-            background: "rgba(168,85,247,0.06)",
-            border: "1px solid rgba(168,85,247,0.2)",
-            borderRadius: 6,
-            padding: "6px 12px",
-            fontFamily: "'Space Mono', monospace",
-            fontSize: 12,
-            color: "#e0e0ff",
-          }}
-        >
-          {path}
-        </div>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-          style={{
-            padding: "5px 14px",
-            background: "rgba(34,211,238,0.1)",
-            border: "1px solid rgba(34,211,238,0.25)",
-            borderRadius: 5,
-            color: "#22d3ee",
-            fontFamily: "'Space Mono', monospace",
-            fontSize: 11,
-            cursor: uploading ? "wait" : "pointer",
-          }}
-        >
-          {uploading ? "Uploading..." : "↑ Upload"}
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            if (e.target.files?.[0]) uploadFile(e.target.files[0]);
-          }}
-        />
-      </div>
-
-      {error && (
-        <div
-          style={{
-            padding: "10px 14px",
-            background: "rgba(248,113,113,0.08)",
-            border: "1px solid rgba(248,113,113,0.25)",
-            borderRadius: 8,
-            fontFamily: "'Space Mono', monospace",
-            fontSize: 12,
-            color: "#f87171",
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {/* File table with drag-drop */}
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={handleDrop}
-        style={{
-          flex: 1,
-          border: `2px dashed ${dragging ? "rgba(34,211,238,0.6)" : "rgba(168,85,247,0.15)"}`,
-          borderRadius: 12,
-          overflow: "auto",
-          transition: "all 0.2s",
-          background: dragging ? "rgba(34,211,238,0.03)" : "transparent",
-          position: "relative",
-        }}
-      >
-        {loading ? (
-          <div
-            style={{
-              padding: 32,
-              textAlign: "center",
-              fontFamily: "'Space Mono', monospace",
-              color: "rgba(255,255,255,0.25)",
-              fontSize: 12,
-            }}
-          >
-            Loading...
-          </div>
-        ) : (
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              fontFamily: "'Space Mono', monospace",
-              fontSize: 12,
-            }}
-          >
-            <thead>
-              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                {["Name", "Size", "Modified", ""].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      padding: "10px 16px",
-                      textAlign: "left",
-                      color: "rgba(255,255,255,0.3)",
-                      fontWeight: 400,
-                      letterSpacing: "0.1em",
-                      fontSize: 10,
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {files
-                // Sorting: Folders first, then by name.
-                .sort((a, b) => {
-                  if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
-                  return a.name.localeCompare(b.name);
-                })
-                .map((f) => (
-                  <tr
-                    key={f.name}
-                    onClick={() =>
-                      f.type === "dir" ? navigateTo(f) : setSelected(f.name)
-                    }
-                    style={{
-                      borderBottom: "1px solid rgba(255,255,255,0.03)",
-                      cursor: "pointer",
-                      background:
-                        selected === f.name
-                          ? "rgba(168,85,247,0.08)"
-                          : "transparent",
-                      transition: "background 0.15s",
-                    }}
-                  >
-                    <td
-                      style={{
-                        padding: "10px 16px",
-                        color: f.type === "dir" ? "#22d3ee" : "#e0e0ff",
-                      }}
-                    >
-                      <span style={{ marginRight: 10, opacity: 0.6 }}>
-                        {f.type === "dir" ? "📁" : "📄"}
-                      </span>
-                      {f.name}
-                    </td>
-                    <td
-                      style={{
-                        padding: "10px 16px",
-                        color: "rgba(255,255,255,0.4)",
-                      }}
-                    >
-                      {f.type === "dir" ? "—" : formatSize(f.size)}
-                    </td>
-                    <td
-                      style={{
-                        padding: "10px 16px",
-                        color: "rgba(255,255,255,0.4)",
-                      }}
-                    >
-                      {f.modified}
-                    </td>
-                    <td style={{ padding: "10px 16px", textAlign: "right" }}>
-                      {f.type === "file" && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            downloadFile(f.name);
-                          }}
-                          style={{
-                            padding: "3px 10px",
-                            background: "rgba(74,222,128,0.08)",
-                            border: "1px solid rgba(74,222,128,0.22)",
-                            borderRadius: 4,
-                            color: "#4ade80",
-                            fontFamily: "'Space Mono', monospace",
-                            fontSize: 10,
-                            cursor: "pointer",
-                          }}
-                        >
-                          ↓ DL
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              {files.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={4}
-                    style={{
-                      padding: 32,
-                      textAlign: "center",
-                      color: "rgba(255,255,255,0.2)",
-                    }}
-                  >
-                    Empty directory
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
-        {dragging && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              pointerEvents: "none",
-              background: "rgba(34,211,238,0.04)",
-            }}
-          >
-            <span
-              style={{
-                color: "#22d3ee",
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 14,
-                textShadow: "0 0 20px rgba(34,211,238,0.8)",
-              }}
-            >
-              Drop to upload
-            </span>
-          </div>
-        )}
-      </div>
-    </div>
+    />
   );
 }
 
-// ─── Dashboard Home ────────────────────────────────────────────────────────────
-
-function DashboardHome({
-  metrics,
-  containers,
-  setActive,
-}: {
-  metrics: Metrics;
-  containers: Container[];
-  setActive: (id: string) => void;
-}) {
-  const statCards = [
-    {
-      label: "CPU Usage",
-      value: metrics.cpu,
-      color: "purple",
-      textColor: "#a855f7",
-    },
-    {
-      label: "RAM Usage",
-      value: metrics.ram,
-      color: "cyan",
-      textColor: "#22d3ee",
-    },
-    {
-      label: "Disk Usage",
-      value: metrics.disk,
-      color: "green",
-      textColor: "#4ade80",
-    },
-  ];
-
-  return (
-    <div
-      style={{ padding: 24, display: "flex", flexDirection: "column", gap: 20 }}
-    >
-      {/* Stat bars */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 16,
-        }}
-      >
-        {statCards.map((s) => (
-          <div
-            key={s.label}
-            style={{
-              background: "rgba(255,255,255,0.02)",
-              border: "1px solid rgba(255,255,255,0.06)",
-              borderRadius: 12,
-              padding: "16px 20px",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 12,
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 11,
-                  color: "rgba(255,255,255,0.4)",
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                }}
-              >
-                {s.label}
-              </span>
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 18,
-                  fontWeight: 700,
-                  color: s.textColor,
-                  textShadow: `0 0 10px ${s.textColor}`,
-                }}
-              >
-                {Math.round(s.value)}%
-              </span>
-            </div>
-            <GlowBar value={s.value} color={s.color} />
-          </div>
-        ))}
-      </div>
-
-      {/* System info + containers */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div
-          style={{
-            background: "rgba(255,255,255,0.02)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 12,
-            padding: "16px 20px",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "'Space Mono', monospace",
-              fontSize: 11,
-              color: "rgba(255,255,255,0.4)",
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              marginBottom: 14,
-            }}
-          >
-            System
-          </div>
-          {[
-            ["Uptime", metrics.uptime],
-            ["Load Avg", metrics.load],
-            ["IP", process.env.NEXT_PUBLIC_VPS_HOST ?? "—"],
-          ].map(([k, v]) => (
-            <div
-              key={k}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                padding: "6px 0",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 12,
-              }}
-            >
-              <span style={{ color: "rgba(255,255,255,0.4)" }}>{k}</span>
-              <span style={{ color: "#e0e0ff" }}>{v}</span>
-            </div>
-          ))}
-        </div>
-
-        <div
-          style={{
-            background: "rgba(255,255,255,0.02)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 12,
-            padding: "16px 20px",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "'Space Mono', monospace",
-              fontSize: 11,
-              color: "rgba(255,255,255,0.4)",
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              marginBottom: 14,
-            }}
-          >
-            Containers
-          </div>
-          {containers.slice(0, 5).map((c) => (
-            <div
-              key={c.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "7px 0",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
-              }}
-            >
-              <div
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: c.state === "running" ? "#4ade80" : "#6b7280",
-                  boxShadow:
-                    c.state === "running"
-                      ? "0 0 6px rgba(74,222,128,0.8)"
-                      : "none",
-                }}
-              />
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 12,
-                  color: "#e0e0ff",
-                  flex: 1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {c.name}
-              </span>
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 10,
-                  color: c.state === "running" ? "#4ade80" : "#6b7280",
-                  flexShrink: 0,
-                }}
-              >
-                {c.state}
-              </span>
-            </div>
-          ))}
-          {containers.length === 0 && (
-            <div
-              style={{
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 11,
-                color: "rgba(255,255,255,0.2)",
-              }}
-            >
-              No containers
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Quick nav */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: 12,
-        }}
-      >
-        {[
-          {
-            id: "terminal",
-            label: "Terminal",
-            desc: "SSH Console",
-            icon: "❯_",
-            color: "#a855f7",
-          },
-          {
-            id: "monitor",
-            label: "Monitor",
-            desc: "Realtime Metrics",
-            icon: "◈",
-            color: "#22d3ee",
-          },
-          {
-            id: "docker",
-            label: "Docker",
-            desc: "Containers",
-            icon: "⊡",
-            color: "#4ade80",
-          },
-          {
-            id: "files",
-            label: "Files",
-            desc: "SFTP Explorer",
-            icon: "◫",
-            color: "#f59e0b",
-          },
-        ].map((item) => (
-          <button
-            key={item.id}
-            onClick={() => setActive(item.id)}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.borderColor =
-                item.color + "44";
-              (e.currentTarget as HTMLButtonElement).style.background =
-                item.color + "0a";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.borderColor =
-                "rgba(255,255,255,0.07)";
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "rgba(255,255,255,0.02)";
-            }}
-            style={{
-              background: "rgba(255,255,255,0.02)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: 12,
-              padding: "18px 16px",
-              cursor: "pointer",
-              textAlign: "left",
-              transition: "all 0.2s",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 22,
-                color: item.color,
-                textShadow: `0 0 12px ${item.color}`,
-              }}
-            >
-              {item.icon}
-            </span>
-            <div>
-              <div
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  color: "#e0e0ff",
-                  fontSize: 13,
-                  fontWeight: 600,
-                }}
-              >
-                {item.label}
-              </div>
-              <div
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  color: "rgba(255,255,255,0.35)",
-                  fontSize: 10,
-                  marginTop: 3,
-                }}
-              >
-                {item.desc}
-              </div>
-            </div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Root Page ─────────────────────────────────────────────────────────────────
-
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const [active, setActive] = useState("dashboard");
-  const [time, setTime] = useState("");
-
-  // Metrics state
-  const [metrics, setMetrics] = useState<Metrics>(DEFAULT_METRICS);
-  const [metricsHistory, setMetricsHistory] = useState<{
-    cpu: number[];
-    ram: number[];
-    disk: number[];
-  }>({
-    cpu: [],
-    ram: [],
-    disk: [],
-  });
-
-  // Containers state — fetch it from root so the Home Dashboard also sees it.
+  const [tab, setTab] = useState<
+    "home" | "terminal" | "monitor" | "docker" | "pm2" | "files"
+  >("home");
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [cpuHistory, setCpuHistory] = useState<number[]>([]);
+  const [ramHistory, setRamHistory] = useState<number[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
+  const [pm2List, setPm2List] = useState<PM2Process[]>([]);
+  const [pm2Logs, setPm2Logs] = useState<{
+    name: string;
+    lines: string[];
+  } | null>(null);
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [filePath, setFilePath] = useState("/root");
+  const [fileContent, setFileContent] = useState<{
+    name: string;
+    content: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [connected, setConnected] = useState(false);
 
-  // Clock
-  useEffect(() => {
-    const tick = () => setTime(new Date().toLocaleTimeString("vi-VN"));
-    tick();
-    const t = setInterval(tick, 1000);
-    return () => clearInterval(t);
+  const sseRef = useRef<EventSource | null>(null);
+  const logsEventRef = useRef<EventSource | null>(null);
+
+  // ── Auth redirect ──
+  const authFetch = useCallback(async (url: string, opts?: RequestInit) => {
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+      window.location.href = "/";
+      return null;
+    }
+    return res;
   }, []);
 
-  // SSE metrics — open a single connection, used for both Dashboard home and Monitor tab
+  // ── Metrics SSE ──
   useEffect(() => {
     const es = new EventSource("/api/metrics");
+    sseRef.current = es;
+    es.onopen = () => setConnected(true);
     es.onmessage = (e) => {
-      try {
-        const data: Metrics = JSON.parse(e.data);
+      const data: Metrics = JSON.parse(e.data);
+      if (data && !("error" in data)) {
         setMetrics(data);
-        // Keep a maximum of 30 history points for sparkline.
-        setMetricsHistory((prev) => ({
-          cpu: [...prev.cpu.slice(-29), data.cpu],
-          ram: [...prev.ram.slice(-29), data.ram],
-          disk: [...prev.disk.slice(-29), data.disk],
-        }));
-      } catch {
-        /* ignore parse errors */
+        setCpuHistory((h) => [...h.slice(-29), data.cpu]);
+        setRamHistory((h) => [...h.slice(-29), data.ram.pct]);
       }
     };
-    es.onerror = () => es.close();
+    es.onerror = () => setConnected(false);
     return () => es.close();
   }, []);
 
-  // // Fetch containers at root (used for Dashboard home overview)
+  // ── Docker fetch ──
+  const fetchDocker = useCallback(async () => {
+    const res = await authFetch("/api/docker");
+    if (!res) return;
+    const data = await res.json();
+    setContainers(data.containers ?? []);
+  }, [authFetch]);
+
+  const dockerAction = async (id: string, action: string) => {
+    await authFetch("/api/docker", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action }),
+    });
+    fetchDocker();
+  };
+
+  // ── PM2 fetch ──
+  const fetchPm2 = useCallback(async () => {
+    const res = await authFetch("/api/pm2");
+    if (!res) return;
+    const data = await res.json();
+    setPm2List(data.processes ?? []);
+  }, [authFetch]);
+
+  const pm2Action = async (id: number, action: string) => {
+    await authFetch("/api/pm2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action }),
+    });
+    setTimeout(fetchPm2, 1000);
+  };
+
+  const fetchPm2Logs = (name: string) => {
+    logsEventRef.current?.close();
+    setPm2Logs({ name, lines: [] });
+    const es = new EventSource(`/api/pm2/logs?name=${name}&lines=100`);
+    logsEventRef.current = es;
+    es.onmessage = (e) => {
+      const { line } = JSON.parse(e.data);
+      setPm2Logs((prev) =>
+        prev ? { ...prev, lines: [...prev.lines.slice(-199), line] } : null,
+      );
+    };
+    es.onerror = () => es.close();
+  };
+
+  // ── Files fetch ──
+  const fetchFiles = useCallback(
+    async (path: string) => {
+      setLoading(true);
+      setFileContent(null);
+      const res = await authFetch(
+        `/api/files?path=${encodeURIComponent(path)}`,
+      );
+      if (!res) return;
+      const data = await res.json();
+      setFiles(data.files ?? []);
+      setFilePath(data.path ?? path);
+      setLoading(false);
+    },
+    [authFetch],
+  );
+
+  const viewFile = async (path: string, name: string) => {
+    const res = await authFetch(
+      `/api/files?path=${encodeURIComponent(path)}&view=1`,
+    );
+    if (!res) return;
+    const text = await res.text();
+    setFileContent({ name, content: text });
+  };
+
+  const downloadFile = (path: string) => {
+    window.open(`/api/files?path=${encodeURIComponent(path)}&download=1`);
+  };
+
+  const downloadZip = (path: string) => {
+    window.open(`/api/files?path=${encodeURIComponent(path)}&zip=1`);
+  };
+
+  // ── Tab switch side effects ──
   useEffect(() => {
-    fetch("/api/docker")
-      .then((r) => (r.ok ? r.json() : { containers: [] }))
-      .then((d) => setContainers(d.containers ?? []))
-      .catch(() => {});
-  }, []);
+    if (tab === "docker") fetchDocker();
+    if (tab === "pm2") fetchPm2();
+    if (tab === "files") fetchFiles(filePath);
+  }, [tab]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (tab === "docker") fetchDocker();
+      if (tab === "pm2") fetchPm2();
+    }, 10000);
+    return () => clearInterval(t);
+  }, [tab, fetchDocker, fetchPm2]);
 
   const logout = async () => {
     await fetch("/api/logout", { method: "POST" });
     window.location.href = "/";
   };
 
-  const views: Record<string, React.ReactNode> = {
-    dashboard: (
-      <DashboardHome
-        metrics={metrics}
-        containers={containers}
-        setActive={setActive}
-      />
-    ),
-    terminal: <TerminalView />,
-    monitor: <MonitorView metrics={metrics} history={metricsHistory} />,
-    docker: <DockerView />,
-    files: <FilesView />,
-  };
+  // ─── Styles ───
+  const s = {
+    bg: "#06060f",
+    surface: "rgba(255,255,255,0.025)",
+    border: "rgba(168,85,247,0.15)",
+    purple: "#a855f7",
+    cyan: "#22d3ee",
+    green: "#4ade80",
+    red: "#f87171",
+    amber: "#f59e0b",
+    text: "#e0e0ff",
+    muted: "rgba(255,255,255,0.38)",
+    mono: "'Space Mono', monospace",
+  } as const;
 
+  const card = (extra?: React.CSSProperties): React.CSSProperties => ({
+    background: s.surface,
+    border: `1px solid ${s.border}`,
+    borderRadius: 12,
+    padding: "14px 16px",
+    ...extra,
+  });
+
+  const tabs = [
+    { id: "home", icon: "⬡", label: "Dashboard" },
+    { id: "terminal", icon: ">_", label: "Terminal" },
+    { id: "monitor", icon: "◈", label: "Monitor" },
+    { id: "docker", icon: "▣", label: "Docker" },
+    { id: "pm2", icon: "⟳", label: "PM2" },
+    { id: "files", icon: "⊟", label: "Files" },
+  ] as const;
+
+  // ─── Render ───
   return (
-    <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #080812; color: #e0e0ff; }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.3); border-radius: 2px; }
-        @keyframes pulse  { 0%,100%{opacity:1} 50%{opacity:0.4} }
-        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-      `}</style>
-
-      <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-        {/* ── Sidebar ── */}
-        <aside
+    <div
+      style={{
+        display: "flex",
+        height: "100vh",
+        background: s.bg,
+        color: s.text,
+        fontFamily: s.mono,
+        overflow: "hidden",
+      }}
+    >
+      {/* Sidebar */}
+      <aside
+        style={{
+          width: 200,
+          borderRight: `1px solid ${s.border}`,
+          display: "flex",
+          flexDirection: "column",
+          flexShrink: 0,
+        }}
+      >
+        <div
           style={{
-            width: 220,
-            background: "rgba(10,8,25,0.97)",
-            borderRight: "1px solid rgba(168,85,247,0.12)",
-            display: "flex",
-            flexDirection: "column",
-            flexShrink: 0,
+            padding: "20px 16px 14px",
+            borderBottom: `1px solid ${s.border}`,
           }}
         >
-          {/* Logo */}
           <div
             style={{
-              padding: "22px 20px 18px",
-              borderBottom: "1px solid rgba(168,85,247,0.1)",
+              fontSize: 13,
+              fontWeight: 700,
+              color: s.purple,
+              textShadow: `0 0 14px ${s.purple}99`,
             }}
           >
-            <div
-              style={{
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 15,
-                fontWeight: 700,
-                color: "#a855f7",
-                textShadow: "0 0 20px rgba(168,85,247,0.8)",
-                letterSpacing: "0.05em",
-              }}
-            >
-              ⬡ VPS Control
-            </div>
-            <div
-              style={{
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 10,
-                color: "rgba(255,255,255,0.3)",
-                marginTop: 4,
-                letterSpacing: "0.08em",
-              }}
-            >
-              {process.env.NEXT_PUBLIC_VPS_USER ?? "jokholk"}@
-              {process.env.NEXT_PUBLIC_VPS_HOST ?? "—"}
-            </div>
+            VPS Control
           </div>
-
-          {/* Nav */}
-          <nav
-            style={{
-              flex: 1,
-              padding: "12px 10px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-            }}
-          >
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActive(item.id)}
-                style={{
-                  width: "100%",
-                  padding: "10px 14px",
-                  border: "none",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  background:
-                    active === item.id
-                      ? "rgba(168,85,247,0.15)"
-                      : "transparent",
-                  borderLeft: `2px solid ${active === item.id ? "#a855f7" : "transparent"}`,
-                  color:
-                    active === item.id ? "#e0e0ff" : "rgba(255,255,255,0.4)",
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 12,
-                  textAlign: "left",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  transition: "all 0.2s",
-                }}
-              >
-                <span
-                  style={{
-                    color:
-                      active === item.id ? "#a855f7" : "rgba(255,255,255,0.25)",
-                    textShadow:
-                      active === item.id
-                        ? "0 0 8px rgba(168,85,247,0.8)"
-                        : "none",
-                    fontSize: 14,
-                  }}
-                >
-                  {item.icon}
-                </span>
-                {item.label}
-              </button>
-            ))}
-          </nav>
-
-          {/* Footer */}
           <div
             style={{
-              padding: "14px 16px",
-              borderTop: "1px solid rgba(168,85,247,0.08)",
+              fontSize: 9,
+              color: s.muted,
+              letterSpacing: "0.12em",
+              marginTop: 2,
             }}
           >
-            <div
+            {process.env.NEXT_PUBLIC_VPS_USER}@
+            {process.env.NEXT_PUBLIC_VPS_HOST}
+          </div>
+        </div>
+
+        <nav style={{ flex: 1, padding: "8px 0" }}>
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 8,
-                marginBottom: 8,
-              }}
-            >
-              <div
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  background: "#4ade80",
-                  boxShadow: "0 0 8px rgba(74,222,128,0.8)",
-                  animation: "pulse 2s infinite",
-                }}
-              />
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 10,
-                  color: "rgba(255,255,255,0.4)",
-                }}
-              >
-                Connected
-              </span>
-            </div>
-            <div
-              style={{
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 10,
-                color: "rgba(255,255,255,0.25)",
-                marginBottom: 12,
-              }}
-            >
-              {time}
-            </div>
-            <button
-              onClick={logout}
-              style={{
+                gap: 10,
                 width: "100%",
-                padding: "7px",
-                background: "rgba(248,113,113,0.08)",
-                border: "1px solid rgba(248,113,113,0.2)",
-                borderRadius: 6,
-                color: "#f87171",
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 10,
+                padding: "10px 16px",
+                background:
+                  tab === t.id ? "rgba(168,85,247,0.12)" : "transparent",
+                border: "none",
+                borderLeft: `2px solid ${tab === t.id ? s.purple : "transparent"}`,
+                color: tab === t.id ? s.purple : s.muted,
+                fontFamily: s.mono,
+                fontSize: 11,
                 cursor: "pointer",
-                letterSpacing: "0.1em",
+                letterSpacing: "0.06em",
+                transition: "all 0.15s",
+                textAlign: "left",
               }}
             >
-              LOGOUT
+              <span style={{ fontSize: 14 }}>{t.icon}</span>
+              {t.label}
             </button>
-          </div>
-        </aside>
+          ))}
+        </nav>
 
-        {/* ── Main ── */}
-        <main
-          style={{
-            flex: 1,
-            overflow: "hidden",
-            display: "flex",
-            flexDirection: "column",
-          }}
+        <div
+          style={{ padding: "12px 16px", borderTop: `1px solid ${s.border}` }}
         >
-          {/* Topbar */}
-          <header
+          <div
             style={{
-              height: 52,
-              borderBottom: "1px solid rgba(168,85,247,0.1)",
               display: "flex",
               alignItems: "center",
-              justifyContent: "space-between",
-              padding: "0 24px",
-              background: "rgba(8,6,20,0.8)",
-              flexShrink: 0,
+              gap: 6,
+              marginBottom: 10,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 11,
-                  color: "rgba(168,85,247,0.6)",
-                }}
-              >
-                ~/
-              </span>
-              <span
-                style={{
-                  fontFamily: "'Space Mono', monospace",
-                  fontSize: 13,
-                  color: "rgba(255,255,255,0.7)",
-                }}
-              >
-                {NAV_ITEMS.find((n) => n.id === active)?.label}
-              </span>
-            </div>
-            <div
+            <span
               style={{
-                display: "flex",
-                gap: 20,
-                fontFamily: "'Space Mono', monospace",
-                fontSize: 11,
-                color: "rgba(255,255,255,0.35)",
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: connected ? s.green : s.red,
+                boxShadow: `0 0 6px ${connected ? s.green : s.red}`,
+                display: "inline-block",
               }}
+            />
+            <span style={{ fontSize: 9, color: s.muted }}>
+              {connected ? "Connected" : "Disconnected"}
+            </span>
+          </div>
+          <button
+            onClick={logout}
+            style={{
+              width: "100%",
+              padding: "7px 0",
+              background: "rgba(248,113,113,0.08)",
+              border: "1px solid rgba(248,113,113,0.2)",
+              borderRadius: 6,
+              color: s.red,
+              fontFamily: s.mono,
+              fontSize: 10,
+              cursor: "pointer",
+              letterSpacing: "0.1em",
+            }}
+          >
+            LOGOUT
+          </button>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <header
+          style={{
+            padding: "14px 20px",
+            borderBottom: `1px solid ${s.border}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexShrink: 0,
+          }}
+        >
+          <div>
+            <span style={{ fontSize: 13, color: s.muted, marginRight: 8 }}>
+              /
+            </span>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>
+              {tabs.find((t) => t.id === tab)?.label}
+            </span>
+          </div>
+          {metrics && (
+            <div
+              style={{ display: "flex", gap: 16, fontSize: 10, color: s.muted }}
             >
               <span>
                 CPU{" "}
-                <span style={{ color: "#a855f7" }}>
-                  {Math.round(metrics.cpu)}%
+                <span style={{ color: metrics.cpu > 80 ? s.red : s.purple }}>
+                  {metrics.cpu}%
                 </span>
               </span>
               <span>
                 RAM{" "}
-                <span style={{ color: "#22d3ee" }}>
-                  {Math.round(metrics.ram)}%
+                <span style={{ color: metrics.ram.pct > 80 ? s.red : s.cyan }}>
+                  {metrics.ram.pct}%
                 </span>
               </span>
               <span>
-                Disk{" "}
-                <span style={{ color: "#4ade80" }}>
-                  {Math.round(metrics.disk)}%
+                DISK{" "}
+                <span
+                  style={{ color: metrics.disk.pct > 80 ? s.red : s.green }}
+                >
+                  {metrics.disk.pct}%
                 </span>
               </span>
             </div>
-          </header>
+          )}
+        </header>
 
-          {/* View content */}
-          <div
-            key={active}
-            style={{
-              flex: 1,
-              overflowY: "auto",
-              animation: "fadeIn 0.2s ease",
-            }}
-          >
-            {views[active]}
-          </div>
-        </main>
-      </div>
-    </>
+        {/* Content */}
+        <div
+          style={{
+            flex: 1,
+            overflow: "auto",
+            padding: tab === "terminal" ? 0 : 16,
+          }}
+        >
+          {/* ── HOME ── */}
+          {tab === "home" && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              {[
+                {
+                  label: "CPU USAGE",
+                  value: metrics?.cpu ?? 0,
+                  color: s.purple,
+                },
+                {
+                  label: "RAM USAGE",
+                  value: metrics?.ram.pct ?? 0,
+                  color: s.cyan,
+                },
+                {
+                  label: "DISK USAGE",
+                  value: metrics?.disk.pct ?? 0,
+                  color: s.green,
+                },
+              ].map((item) => (
+                <div key={item.label} style={card()}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 9,
+                        color: s.muted,
+                        letterSpacing: "0.14em",
+                      }}
+                    >
+                      {item.label}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 700,
+                        color: item.color,
+                      }}
+                    >
+                      {item.value}%
+                    </span>
+                  </div>
+                  <Bar pct={item.value} />
+                </div>
+              ))}
+
+              <div style={{ ...card(), gridColumn: "1 / 3" }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                    marginBottom: 12,
+                  }}
+                >
+                  SYSTEM
+                </div>
+                {[
+                  ["Uptime", metrics?.uptime ?? "—"],
+                  [
+                    "Load Avg",
+                    metrics
+                      ? `${metrics.load["1m"]} ${metrics.load["5m"]} ${metrics.load["15m"]}`
+                      : "—",
+                  ],
+                  ["IP", process.env.NEXT_PUBLIC_VPS_HOST ?? "—"],
+                  ["Network RX", metrics ? fmt(metrics.network.rx) : "—"],
+                  ["Network TX", metrics ? fmt(metrics.network.tx) : "—"],
+                ].map(([k, v]) => (
+                  <div
+                    key={k}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      padding: "6px 0",
+                      borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                      fontSize: 11,
+                    }}
+                  >
+                    <span style={{ color: s.muted }}>{k}</span>
+                    <span style={{ color: s.text }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={card()}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                    marginBottom: 12,
+                  }}
+                >
+                  CONTAINERS
+                </div>
+                {containers.length === 0 ? (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: s.muted,
+                      textAlign: "center",
+                      padding: "16px 0",
+                    }}
+                  >
+                    No containers
+                  </div>
+                ) : (
+                  containers.slice(0, 4).map((c) => (
+                    <div
+                      key={c.Id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "4px 0",
+                        fontSize: 11,
+                      }}
+                    >
+                      <StatusDot status={c.State} />
+                      <span
+                        style={{
+                          flex: 1,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {c.Names[0]?.replace("/", "")}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Quick nav cards */}
+              {(
+                [
+                  {
+                    id: "terminal",
+                    icon: ">_",
+                    label: "Terminal",
+                    sub: "SSH Console",
+                  },
+                  {
+                    id: "monitor",
+                    icon: "◈",
+                    label: "Monitor",
+                    sub: "Realtime Metrics",
+                  },
+                  {
+                    id: "docker",
+                    icon: "▣",
+                    label: "Docker",
+                    sub: "Containers",
+                  },
+                  {
+                    id: "pm2",
+                    icon: "⟳",
+                    label: "PM2",
+                    sub: "Process Manager",
+                  },
+                  {
+                    id: "files",
+                    icon: "⊟",
+                    label: "Files",
+                    sub: "SFTP Explorer",
+                  },
+                ] as const
+              ).map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  style={{
+                    ...card({ cursor: "pointer", transition: "all 0.15s" }),
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.borderColor = "rgba(168,85,247,0.4)")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.borderColor = s.border)
+                  }
+                >
+                  <span style={{ fontSize: 22, color: s.purple }}>
+                    {item.icon}
+                  </span>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>
+                      {item.label}
+                    </div>
+                    <div style={{ fontSize: 10, color: s.muted }}>
+                      {item.sub}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── TERMINAL ── */}
+          {tab === "terminal" && (
+            <iframe
+              src="/console"
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "none",
+                display: "block",
+              }}
+              title="Terminal"
+            />
+          )}
+
+          {/* ── MONITOR ── */}
+          {tab === "monitor" && metrics && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+              }}
+            >
+              {/* CPU */}
+              <div style={card()}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 10,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: s.muted,
+                      letterSpacing: "0.14em",
+                    }}
+                  >
+                    CPU
+                  </span>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <Sparkline data={cpuHistory} color={s.purple} />
+                    <span
+                      style={{ fontSize: 22, fontWeight: 700, color: s.purple }}
+                    >
+                      {metrics.cpu}%
+                    </span>
+                  </div>
+                </div>
+                <Bar pct={metrics.cpu} />
+                <div
+                  style={{
+                    marginTop: 8,
+                    display: "flex",
+                    gap: 12,
+                    fontSize: 10,
+                    color: s.muted,
+                  }}
+                >
+                  <span>1m: {metrics.load["1m"]}</span>
+                  <span>5m: {metrics.load["5m"]}</span>
+                  <span>15m: {metrics.load["15m"]}</span>
+                </div>
+              </div>
+
+              {/* RAM */}
+              <div style={card()}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 10,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: s.muted,
+                      letterSpacing: "0.14em",
+                    }}
+                  >
+                    MEMORY
+                  </span>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <Sparkline data={ramHistory} color={s.cyan} />
+                    <span
+                      style={{ fontSize: 22, fontWeight: 700, color: s.cyan }}
+                    >
+                      {metrics.ram.pct}%
+                    </span>
+                  </div>
+                </div>
+                <Bar pct={metrics.ram.pct} color="cyan" />
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 4,
+                    fontSize: 10,
+                  }}
+                >
+                  {[
+                    ["Used", fmtKB(metrics.ram.used)],
+                    ["Free", fmtKB(metrics.ram.free)],
+                    ["Buffers", fmtKB(metrics.ram.buffers)],
+                    ["Cached", fmtKB(metrics.ram.cached)],
+                    ["Total", fmtKB(metrics.ram.total)],
+                  ].map(([k, v]) => (
+                    <div
+                      key={k}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <span style={{ color: s.muted }}>{k}</span>
+                      <span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Disk */}
+              <div style={card()}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                    marginBottom: 10,
+                  }}
+                >
+                  DISK
+                </div>
+                <Bar pct={metrics.disk.pct} color="green" />
+                <div
+                  style={{
+                    marginTop: 8,
+                    display: "flex",
+                    gap: 16,
+                    fontSize: 10,
+                  }}
+                >
+                  <span style={{ color: s.muted }}>Used</span>
+                  <span>
+                    {metrics.disk.used}MB / {metrics.disk.total}MB
+                  </span>
+                  <span style={{ color: s.muted, marginLeft: "auto" }}>
+                    Free: {metrics.disk.free}MB
+                  </span>
+                </div>
+              </div>
+
+              {/* Network */}
+              <div style={card()}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                    marginBottom: 10,
+                  }}
+                >
+                  NETWORK (cumulative)
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "10px 0",
+                      background: "rgba(0,0,0,0.2)",
+                      borderRadius: 8,
+                    }}
+                  >
+                    <div
+                      style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
+                    >
+                      ↓ RX
+                    </div>
+                    <div style={{ fontSize: 16, color: s.green }}>
+                      {fmt(metrics.network.rx)}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "10px 0",
+                      background: "rgba(0,0,0,0.2)",
+                      borderRadius: 8,
+                    }}
+                  >
+                    <div
+                      style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
+                    >
+                      ↑ TX
+                    </div>
+                    <div style={{ fontSize: 16, color: s.purple }}>
+                      {fmt(metrics.network.tx)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Top Processes */}
+              <div style={{ ...card(), gridColumn: "1 / 3" }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                    marginBottom: 10,
+                  }}
+                >
+                  TOP PROCESSES
+                </div>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 11,
+                  }}
+                >
+                  <thead>
+                    <tr style={{ color: s.muted, fontSize: 9 }}>
+                      {["PID", "USER", "CPU%", "MEM%", "COMMAND"].map((h) => (
+                        <th
+                          key={h}
+                          style={{
+                            textAlign: "left",
+                            padding: "4px 8px",
+                            letterSpacing: "0.1em",
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {metrics.processes.map((p, i) => (
+                      <tr
+                        key={i}
+                        style={{
+                          borderTop: `1px solid rgba(255,255,255,0.04)`,
+                        }}
+                      >
+                        <td style={{ padding: "5px 8px", color: s.muted }}>
+                          {p.pid}
+                        </td>
+                        <td style={{ padding: "5px 8px", color: s.cyan }}>
+                          {p.user}
+                        </td>
+                        <td
+                          style={{
+                            padding: "5px 8px",
+                            color: p.cpu > 50 ? s.red : s.text,
+                          }}
+                        >
+                          {p.cpu.toFixed(1)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "5px 8px",
+                            color: p.mem > 20 ? s.amber : s.text,
+                          }}
+                        >
+                          {p.mem.toFixed(1)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "5px 8px",
+                            fontFamily: s.mono,
+                            overflow: "hidden",
+                            maxWidth: 300,
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {p.cmd}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── DOCKER ── */}
+          {tab === "docker" && (
+            <div style={card()}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 14,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: s.muted,
+                    letterSpacing: "0.14em",
+                  }}
+                >
+                  CONTAINERS ({containers.length})
+                </span>
+                <button
+                  onClick={fetchDocker}
+                  style={{
+                    padding: "4px 12px",
+                    background: "transparent",
+                    border: `1px solid ${s.border}`,
+                    borderRadius: 5,
+                    color: s.muted,
+                    fontFamily: s.mono,
+                    fontSize: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+              {containers.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "32px 0",
+                    color: s.muted,
+                    fontSize: 12,
+                  }}
+                >
+                  No containers found
+                </div>
+              ) : (
+                containers.map((c) => (
+                  <div
+                    key={c.Id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "10px 0",
+                      borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                      fontSize: 11,
+                    }}
+                  >
+                    <StatusDot status={c.State} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                        {c.Names[0]?.replace("/", "")}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 9,
+                          color: s.muted,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {c.Image} · {c.Status}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {["start", "stop", "restart"].map((action) => (
+                        <button
+                          key={action}
+                          onClick={() => dockerAction(c.Id, action)}
+                          style={{
+                            padding: "3px 8px",
+                            background: "transparent",
+                            border: `1px solid ${s.border}`,
+                            borderRadius: 4,
+                            color:
+                              action === "stop"
+                                ? s.red
+                                : action === "restart"
+                                  ? s.amber
+                                  : s.green,
+                            fontFamily: s.mono,
+                            fontSize: 9,
+                            cursor: "pointer",
+                            letterSpacing: "0.06em",
+                          }}
+                        >
+                          {action}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* ── PM2 ── */}
+          {tab === "pm2" && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: pm2Logs ? "1fr 1fr" : "1fr",
+                gap: 12,
+              }}
+            >
+              <div style={card()}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 14,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: s.muted,
+                      letterSpacing: "0.14em",
+                    }}
+                  >
+                    PROCESSES ({pm2List.length})
+                  </span>
+                  <button
+                    onClick={fetchPm2}
+                    style={{
+                      padding: "4px 12px",
+                      background: "transparent",
+                      border: `1px solid ${s.border}`,
+                      borderRadius: 5,
+                      color: s.muted,
+                      fontFamily: s.mono,
+                      fontSize: 10,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {pm2List.length === 0 ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "32px 0",
+                      color: s.muted,
+                      fontSize: 12,
+                    }}
+                  >
+                    No processes
+                  </div>
+                ) : (
+                  pm2List.map((p) => (
+                    <div
+                      key={p.id}
+                      style={{
+                        padding: "10px 0",
+                        borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          marginBottom: 6,
+                        }}
+                      >
+                        <StatusDot status={p.status} />
+                        <span
+                          style={{ fontWeight: 700, fontSize: 12, flex: 1 }}
+                        >
+                          {p.name}
+                        </span>
+                        <span style={{ fontSize: 9, color: s.muted }}>
+                          #{p.id} · {p.mode}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          fontSize: 10,
+                          color: s.muted,
+                          marginBottom: 8,
+                          paddingLeft: 14,
+                        }}
+                      >
+                        <span>
+                          CPU: <span style={{ color: s.text }}>{p.cpu}%</span>
+                        </span>
+                        <span>
+                          MEM:{" "}
+                          <span style={{ color: s.text }}>{fmt(p.memory)}</span>
+                        </span>
+                        <span>
+                          ↺:{" "}
+                          <span
+                            style={{ color: p.restarts > 5 ? s.red : s.text }}
+                          >
+                            {p.restarts}
+                          </span>
+                        </span>
+                        <span>
+                          UP:{" "}
+                          <span style={{ color: s.text }}>
+                            {fmtUptime(p.uptime)}
+                          </span>
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, paddingLeft: 14 }}>
+                        {["restart", "stop", "start", "delete"].map(
+                          (action) => (
+                            <button
+                              key={action}
+                              onClick={() => pm2Action(p.id, action)}
+                              style={{
+                                padding: "3px 8px",
+                                background: "transparent",
+                                border: `1px solid ${s.border}`,
+                                borderRadius: 4,
+                                color:
+                                  action === "delete"
+                                    ? s.red
+                                    : action === "stop"
+                                      ? s.amber
+                                      : action === "restart"
+                                        ? s.purple
+                                        : s.green,
+                                fontFamily: s.mono,
+                                fontSize: 9,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {action}
+                            </button>
+                          ),
+                        )}
+                        <button
+                          onClick={() => fetchPm2Logs(p.name)}
+                          style={{
+                            padding: "3px 8px",
+                            background: "rgba(168,85,247,0.1)",
+                            border: `1px solid rgba(168,85,247,0.25)`,
+                            borderRadius: 4,
+                            color: s.purple,
+                            fontFamily: s.mono,
+                            fontSize: 9,
+                            cursor: "pointer",
+                          }}
+                        >
+                          logs
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* PM2 Logs panel */}
+              {pm2Logs && (
+                <div
+                  style={{
+                    ...card(),
+                    display: "flex",
+                    flexDirection: "column",
+                    height: "calc(100vh - 120px)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 9,
+                        color: s.muted,
+                        letterSpacing: "0.14em",
+                      }}
+                    >
+                      LOGS — {pm2Logs.name}
+                    </span>
+                    <button
+                      onClick={() => {
+                        logsEventRef.current?.close();
+                        setPm2Logs(null);
+                      }}
+                      style={{
+                        padding: "3px 8px",
+                        background: "transparent",
+                        border: `1px solid ${s.border}`,
+                        borderRadius: 4,
+                        color: s.muted,
+                        fontFamily: s.mono,
+                        fontSize: 9,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                  <div
+                    style={{
+                      flex: 1,
+                      overflow: "auto",
+                      background: "rgba(0,0,0,0.3)",
+                      borderRadius: 6,
+                      padding: 10,
+                    }}
+                  >
+                    {pm2Logs.lines.map((line, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          fontSize: 10,
+                          lineHeight: 1.7,
+                          color:
+                            line.includes("error") || line.includes("ERR")
+                              ? s.red
+                              : s.text,
+                          fontFamily: s.mono,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── FILES ── */}
+          {tab === "files" && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: fileContent ? "1fr 1.5fr" : "1fr",
+                gap: 12,
+                height: "calc(100vh - 120px)",
+              }}
+            >
+              <div
+                style={{
+                  ...card(),
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Path bar */}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    marginBottom: 10,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  {filePath
+                    .split("/")
+                    .filter(Boolean)
+                    .map((seg, i, arr) => {
+                      const path = "/" + arr.slice(0, i + 1).join("/");
+                      return (
+                        <span
+                          key={i}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          {i > 0 && <span style={{ color: s.muted }}>/</span>}
+                          <button
+                            onClick={() => fetchFiles(path)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              color: i === arr.length - 1 ? s.text : s.purple,
+                              fontFamily: s.mono,
+                              fontSize: 11,
+                              cursor: "pointer",
+                              padding: 0,
+                            }}
+                          >
+                            {seg}
+                          </button>
+                        </span>
+                      );
+                    })}
+                  <button
+                    onClick={() => downloadZip(filePath)}
+                    style={{
+                      marginLeft: "auto",
+                      padding: "2px 8px",
+                      background: "transparent",
+                      border: `1px solid ${s.border}`,
+                      borderRadius: 4,
+                      color: s.muted,
+                      fontFamily: s.mono,
+                      fontSize: 9,
+                      cursor: "pointer",
+                    }}
+                  >
+                    ↓ zip folder
+                  </button>
+                </div>
+
+                {/* File list */}
+                <div style={{ flex: 1, overflow: "auto" }}>
+                  {loading ? (
+                    <div
+                      style={{
+                        textAlign: "center",
+                        padding: "32px 0",
+                        color: s.muted,
+                      }}
+                    >
+                      Loading...
+                    </div>
+                  ) : (
+                    files.map((f) => (
+                      <div
+                        key={f.name}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 4px",
+                          borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                          fontSize: 11,
+                          cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.background =
+                            "rgba(168,85,247,0.05)")
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.background = "transparent")
+                        }
+                      >
+                        <span
+                          style={{
+                            color: f.type === "dir" ? s.amber : s.muted,
+                            width: 14,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {f.type === "dir" ? "▸" : "·"}
+                        </span>
+                        <span
+                          style={{
+                            flex: 1,
+                            color: f.type === "dir" ? s.text : s.muted,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          onClick={() =>
+                            f.type === "dir"
+                              ? fetchFiles(`${filePath}/${f.name}`)
+                              : f.viewable
+                                ? viewFile(`${filePath}/${f.name}`, f.name)
+                                : null
+                          }
+                        >
+                          {f.name}
+                        </span>
+                        <span
+                          style={{ fontSize: 9, color: s.muted, flexShrink: 0 }}
+                        >
+                          {f.modified}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 9,
+                            color: s.muted,
+                            width: 50,
+                            textAlign: "right",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {f.type === "file" ? fmt(f.size) : ""}
+                        </span>
+                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                          {f.viewable && (
+                            <button
+                              onClick={() =>
+                                viewFile(`${filePath}/${f.name}`, f.name)
+                              }
+                              style={{
+                                padding: "2px 6px",
+                                background: "transparent",
+                                border: `1px solid ${s.border}`,
+                                borderRadius: 3,
+                                color: s.cyan,
+                                fontFamily: s.mono,
+                                fontSize: 8,
+                                cursor: "pointer",
+                              }}
+                            >
+                              view
+                            </button>
+                          )}
+                          {f.type === "file" && (
+                            <button
+                              onClick={() =>
+                                downloadFile(`${filePath}/${f.name}`)
+                              }
+                              style={{
+                                padding: "2px 6px",
+                                background: "transparent",
+                                border: `1px solid ${s.border}`,
+                                borderRadius: 3,
+                                color: s.purple,
+                                fontFamily: s.mono,
+                                fontSize: 8,
+                                cursor: "pointer",
+                              }}
+                            >
+                              ↓
+                            </button>
+                          )}
+                          {f.type === "dir" && (
+                            <button
+                              onClick={() =>
+                                downloadZip(`${filePath}/${f.name}`)
+                              }
+                              style={{
+                                padding: "2px 6px",
+                                background: "transparent",
+                                border: `1px solid ${s.border}`,
+                                borderRadius: 3,
+                                color: s.purple,
+                                fontFamily: s.mono,
+                                fontSize: 8,
+                                cursor: "pointer",
+                              }}
+                            >
+                              zip
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* File viewer */}
+              {fileContent && (
+                <div
+                  style={{
+                    ...card(),
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 10,
+                    }}
+                  >
+                    <span style={{ fontSize: 11, color: s.cyan }}>
+                      {fileContent.name}
+                    </span>
+                    <button
+                      onClick={() => setFileContent(null)}
+                      style={{
+                        padding: "3px 8px",
+                        background: "transparent",
+                        border: `1px solid ${s.border}`,
+                        borderRadius: 4,
+                        color: s.muted,
+                        fontFamily: s.mono,
+                        fontSize: 9,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <pre
+                    style={{
+                      flex: 1,
+                      overflow: "auto",
+                      margin: 0,
+                      fontSize: 11,
+                      lineHeight: 1.7,
+                      color: s.text,
+                      fontFamily: s.mono,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      background: "rgba(0,0,0,0.25)",
+                      borderRadius: 6,
+                      padding: 12,
+                    }}
+                  >
+                    {fileContent.content}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
   );
 }
