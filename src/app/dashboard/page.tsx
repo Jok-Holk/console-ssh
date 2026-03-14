@@ -386,6 +386,372 @@ function FileEditor({
   );
 }
 
+// ─── Deploy Panel ─────────────────────────────────────────────────────────────
+type DeployStep = {
+  step: string;
+  status: "running" | "done" | "skipped";
+  output?: string;
+};
+
+function DeployPanel({
+  authFetch,
+  s,
+}: {
+  authFetch: (url: string, opts?: RequestInit) => Promise<Response | null>;
+  s: S;
+}) {
+  const [open, setOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [gitInfo, setGitInfo] = useState<{
+    hasUpdates: boolean;
+    current: string;
+    pending: string[];
+  } | null>(null);
+  const [steps, setSteps] = useState<DeployStep[]>([]);
+  const [done, setDone] = useState<string | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll log to bottom
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [steps]);
+
+  const checkUpdates = async () => {
+    setChecking(true);
+    setGitInfo(null);
+    setSteps([]);
+    setDone(null);
+    const res = await authFetch("/api/deploy");
+    if (res?.ok) setGitInfo(await res.json());
+    setChecking(false);
+  };
+
+  const runDeploy = async () => {
+    setDeploying(true);
+    setSteps([]);
+    setDone(null);
+
+    const res = await authFetch("/api/deploy", { method: "POST" });
+    if (!res?.body) {
+      setDeploying(false);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done: streamDone, value } = await reader.read();
+      if (streamDone) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        const eventMatch = part.match(/^event: (\w+)/m);
+        const dataMatch = part.match(/^data: (.+)/m);
+        if (!eventMatch || !dataMatch) continue;
+        const event = eventMatch[1];
+        const data = JSON.parse(dataMatch[1]);
+        if (event === "step") {
+          setSteps((prev) => {
+            const idx = prev.findIndex((s) => s.step === data.step);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = data;
+              return next;
+            }
+            return [...prev, data];
+          });
+        }
+        if (event === "done") setDone(data.message);
+      }
+    }
+    setDeploying(false);
+  };
+
+  const statusColor = (status: string) =>
+    status === "done" ? s.green : status === "running" ? s.amber : s.muted;
+
+  const statusIcon = (status: string) =>
+    status === "done" ? "✓" : status === "running" ? "⟳" : "–";
+
+  return (
+    <>
+      {/* Floating button */}
+      <button
+        onClick={() => {
+          setOpen(true);
+          checkUpdates();
+        }}
+        style={{
+          position: "fixed",
+          bottom: 24,
+          right: 24,
+          zIndex: 50,
+          padding: "10px 16px",
+          background: "rgba(168,85,247,0.15)",
+          border: "1px solid rgba(168,85,247,0.4)",
+          borderRadius: 10,
+          color: s.purple,
+          fontFamily: s.mono,
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: "pointer",
+          letterSpacing: "0.06em",
+          boxShadow: "0 0 20px rgba(168,85,247,0.2)",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          transition: "all 0.2s",
+        }}
+        onMouseEnter={(e) =>
+          (e.currentTarget.style.background = "rgba(168,85,247,0.28)")
+        }
+        onMouseLeave={(e) =>
+          (e.currentTarget.style.background = "rgba(168,85,247,0.15)")
+        }
+      >
+        <span>⬆</span> Deploy
+      </button>
+
+      {/* Modal */}
+      {open && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 200,
+            background: "rgba(6,6,15,0.8)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setOpen(false);
+          }}
+        >
+          <div
+            style={{
+              width: 560,
+              background: "#0a0a1a",
+              border: "1px solid rgba(168,85,247,0.25)",
+              borderRadius: 14,
+              padding: 24,
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700, color: s.purple }}>
+                Deploy Update
+              </div>
+              <button
+                onClick={() => setOpen(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: s.muted,
+                  fontFamily: s.mono,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Git status */}
+            {checking && (
+              <div style={{ fontSize: 11, color: s.muted }}>
+                Checking remote...
+              </div>
+            )}
+            {gitInfo && (
+              <div
+                style={{
+                  background: "rgba(0,0,0,0.3)",
+                  borderRadius: 8,
+                  padding: 12,
+                  fontSize: 11,
+                }}
+              >
+                <div
+                  style={{
+                    color: s.muted,
+                    marginBottom: 6,
+                    fontSize: 9,
+                    letterSpacing: "0.1em",
+                  }}
+                >
+                  CURRENT
+                </div>
+                <div
+                  style={{
+                    color: s.text,
+                    marginBottom: 10,
+                    fontFamily: s.mono,
+                  }}
+                >
+                  {gitInfo.current}
+                </div>
+                {gitInfo.hasUpdates ? (
+                  <>
+                    <div
+                      style={{
+                        color: s.amber,
+                        marginBottom: 6,
+                        fontSize: 9,
+                        letterSpacing: "0.1em",
+                      }}
+                    >
+                      PENDING COMMITS
+                    </div>
+                    {gitInfo.pending.map((line, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          color: s.text,
+                          fontFamily: s.mono,
+                          fontSize: 10,
+                          padding: "2px 0",
+                        }}
+                      >
+                        · {line}
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <div style={{ color: s.green, fontSize: 10 }}>
+                    ✓ Already up to date
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Deploy log */}
+            {steps.length > 0 && (
+              <div
+                ref={logRef}
+                style={{
+                  background: "rgba(0,0,0,0.35)",
+                  borderRadius: 8,
+                  padding: 12,
+                  maxHeight: 220,
+                  overflow: "auto",
+                }}
+              >
+                {steps.map((step, i) => (
+                  <div key={i} style={{ marginBottom: 10 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 11,
+                        marginBottom: 4,
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: statusColor(step.status),
+                          animation:
+                            step.status === "running"
+                              ? "spin 1s linear infinite"
+                              : "none",
+                        }}
+                      >
+                        {statusIcon(step.status)}
+                      </span>
+                      <span style={{ color: s.text, fontWeight: 700 }}>
+                        {step.step}
+                      </span>
+                      <span style={{ color: s.muted, fontSize: 9 }}>
+                        {step.status}
+                      </span>
+                    </div>
+                    {step.output && (
+                      <pre
+                        style={{
+                          margin: 0,
+                          fontSize: 9,
+                          color: s.muted,
+                          fontFamily: s.mono,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                          paddingLeft: 18,
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {step.output.slice(-800)}
+                      </pre>
+                    )}
+                  </div>
+                ))}
+                {done && (
+                  <div style={{ color: s.green, fontSize: 11, marginTop: 4 }}>
+                    ✓ {done}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div
+              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
+            >
+              <button
+                onClick={checkUpdates}
+                disabled={checking || deploying}
+                style={{
+                  padding: "8px 14px",
+                  background: "transparent",
+                  border: `1px solid ${s.border}`,
+                  borderRadius: 7,
+                  color: s.muted,
+                  fontFamily: s.mono,
+                  fontSize: 10,
+                  cursor: "pointer",
+                }}
+              >
+                {checking ? "Checking..." : "↻ Refresh"}
+              </button>
+              <button
+                onClick={runDeploy}
+                disabled={deploying || checking}
+                style={{
+                  padding: "8px 18px",
+                  background: "rgba(168,85,247,0.2)",
+                  border: "1px solid rgba(168,85,247,0.4)",
+                  borderRadius: 7,
+                  color: s.purple,
+                  fontFamily: s.mono,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  opacity: deploying ? 0.6 : 1,
+                }}
+              >
+                {deploying ? "Deploying..." : "⬆ Deploy Now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const [tab, setTab] = useState<
@@ -1993,6 +2359,9 @@ export default function DashboardPage() {
           )}
         </div>
       </main>
+
+      {/* Deploy button — floating bottom right, always visible */}
+      <DeployPanel authFetch={authFetch} s={s} />
     </div>
   );
 }
