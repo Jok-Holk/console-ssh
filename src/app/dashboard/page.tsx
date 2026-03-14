@@ -66,7 +66,8 @@ type TabId =
   | "docker"
   | "pm2"
   | "files"
-  | "cv";
+  | "cv"
+  | "settings";
 type S = {
   bg: string;
   surface: string;
@@ -792,6 +793,450 @@ function DeployPanel({
   );
 }
 
+// Settings tab component — embedded in dashboard_page.tsx
+// Paste this before the Main component
+
+// ─── Module config definitions ───────────────────────────────────────────────
+const MODULE_DEFS = [
+  {
+    id: "metrics",
+    label: "Monitor",
+    icon: "◈",
+    envKey: "ENABLE_METRICS",
+    fields: [] as Field[],
+  },
+  {
+    id: "docker",
+    label: "Docker",
+    icon: "▣",
+    envKey: "ENABLE_DOCKER",
+    fields: [] as Field[],
+  },
+  {
+    id: "pm2",
+    label: "PM2",
+    icon: "⟳",
+    envKey: "ENABLE_PM2",
+    fields: [] as Field[],
+  },
+  {
+    id: "files",
+    label: "Files",
+    icon: "⊟",
+    envKey: "ENABLE_FILES",
+    fields: [] as Field[],
+  },
+  {
+    id: "cv",
+    label: "CV Editor",
+    icon: "✎",
+    envKey: "NEXT_PUBLIC_ENABLE_CV",
+    fields: [
+      {
+        key: "CV_SERVICE_URL",
+        label: "CV Service URL",
+        placeholder: "http://localhost:4321",
+      },
+    ],
+  },
+] as const;
+
+interface Field {
+  key: string;
+  label: string;
+  placeholder: string;
+}
+
+interface HealthResult {
+  ok: boolean;
+  reason?: string;
+}
+
+function SettingsTab({
+  authFetch,
+  s,
+}: {
+  authFetch: (u: string, o?: RequestInit) => Promise<Response | null>;
+  s: S;
+}) {
+  const [envData, setEnvData] = useState<Record<string, string> | null>(null);
+  const [health, setHealth] = useState<Record<string, HealthResult> | null>(
+    null,
+  );
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Core connection fields
+  const CORE_FIELDS = [
+    { key: "VPS_HOST", label: "VPS Host", placeholder: "103.77.243.5" },
+    { key: "VPS_USER", label: "VPS User", placeholder: "root" },
+    {
+      key: "REDIS_URL",
+      label: "Redis URL",
+      placeholder: "redis://localhost:6380",
+    },
+    {
+      key: "VPS_PRIVATE_KEY_PATH",
+      label: "SSH Key Path",
+      placeholder: "./keys/id_rsa",
+    },
+    {
+      key: "NEXT_PUBLIC_VPS_HOST",
+      label: "Public VPS Host",
+      placeholder: "103.77.243.5",
+    },
+    {
+      key: "NEXT_PUBLIC_VPS_USER",
+      label: "Public VPS User",
+      placeholder: "root",
+    },
+  ];
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const res = await authFetch("/api/settings");
+      if (res?.ok) {
+        const data = await res.json();
+        setEnvData(data.env);
+        setHealth(data.health);
+        // Pre-fill edits with current values
+        setEdits(data.env ?? {});
+      }
+      setLoading(false);
+    })();
+  }, [authFetch]);
+
+  const isEnabled = (envKey: string): boolean => {
+    const val = edits[envKey] ?? envData?.[envKey] ?? "true";
+    return val !== "false";
+  };
+
+  const toggleModule = (envKey: string) => {
+    const current = isEnabled(envKey);
+    setEdits((prev) => ({ ...prev, [envKey]: current ? "false" : "true" }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveMsg(null);
+
+    // Only send changed values
+    const updates: Record<string, string> = {};
+    for (const [k, v] of Object.entries(edits)) {
+      if (v !== (envData?.[k] ?? "")) updates[k] = v;
+    }
+
+    const res = await authFetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates, restart: ["console-ssh"] }),
+    });
+
+    setSaving(false);
+    if (res?.ok) {
+      setSaveMsg("Saved ✓ — restarting...");
+      setTimeout(() => (window.location.href = "/dashboard"), 4000);
+    } else {
+      setSaveMsg("Save failed");
+    }
+  };
+
+  const healthDot = (key: string) => {
+    if (!health) return null;
+    const h = health[key];
+    if (!h) return null;
+    return (
+      <span
+        title={h.reason ?? "OK"}
+        style={{
+          display: "inline-block",
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          background: h.ok ? "#4ade80" : "#f87171",
+          boxShadow: h.ok ? "0 0 5px rgba(74,222,128,0.6)" : "none",
+          marginLeft: 8,
+          verticalAlign: "middle",
+        }}
+      />
+    );
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    background: "#080810",
+    border: `0.5px solid rgba(255,255,255,0.1)`,
+    borderRadius: 8,
+    padding: "9px 13px",
+    color: s.text,
+    fontFamily: s.mono,
+    fontSize: 12,
+    outline: "none",
+    boxSizing: "border-box",
+  };
+
+  const card = (extra?: React.CSSProperties): React.CSSProperties => ({
+    background: s.surface,
+    border: `0.5px solid ${s.border}`,
+    borderRadius: 14,
+    padding: "16px 18px",
+    ...extra,
+  });
+
+  if (loading)
+    return (
+      <div
+        style={{
+          textAlign: "center",
+          padding: "60px 0",
+          color: s.muted,
+          fontSize: 13,
+        }}
+      >
+        Loading settings...
+      </div>
+    );
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+        maxWidth: 720,
+      }}
+    >
+      {/* Core connection */}
+      <div style={card()}>
+        <div
+          style={{
+            fontSize: 11,
+            color: s.muted,
+            letterSpacing: "0.13em",
+            marginBottom: 16,
+          }}
+        >
+          CORE CONNECTION
+          {healthDot("redis")}
+          {health?.redis && !health.redis.ok && (
+            <span style={{ marginLeft: 8, fontSize: 10, color: s.red }}>
+              {health.redis.reason}
+            </span>
+          )}
+        </div>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+        >
+          {CORE_FIELDS.map((f) => (
+            <div key={f.key}>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 10,
+                  color: s.muted,
+                  letterSpacing: "0.1em",
+                  marginBottom: 6,
+                }}
+              >
+                {f.label}
+              </label>
+              <input
+                value={edits[f.key] ?? ""}
+                onChange={(e) =>
+                  setEdits((prev) => ({ ...prev, [f.key]: e.target.value }))
+                }
+                placeholder={f.placeholder}
+                style={inputStyle}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Module toggles */}
+      <div style={card()}>
+        <div
+          style={{
+            fontSize: 11,
+            color: s.muted,
+            letterSpacing: "0.13em",
+            marginBottom: 16,
+          }}
+        >
+          MODULES
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {MODULE_DEFS.map((mod) => {
+            const on = isEnabled(mod.envKey);
+            const hkey =
+              mod.id === "cv"
+                ? "cv"
+                : mod.id === "docker"
+                  ? "docker"
+                  : undefined;
+            return (
+              <div
+                key={mod.id}
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 14px",
+                    background: on
+                      ? "rgba(128,96,208,0.08)"
+                      : "rgba(255,255,255,0.02)",
+                    border: `0.5px solid ${on ? "rgba(148,120,255,0.25)" : s.border}`,
+                    borderRadius: 10,
+                  }}
+                >
+                  <span
+                    style={{ fontSize: 16, width: 20, textAlign: "center" }}
+                  >
+                    {mod.icon}
+                  </span>
+                  <span style={{ flex: 1, fontSize: 13, color: s.text }}>
+                    {mod.label}
+                    {hkey && healthDot(hkey)}
+                    {hkey && health?.[hkey] && !health[hkey].ok && (
+                      <span
+                        style={{ marginLeft: 8, fontSize: 10, color: s.red }}
+                      >
+                        {health[hkey].reason}
+                      </span>
+                    )}
+                  </span>
+                  {/* Toggle switch */}
+                  <div
+                    onClick={() => toggleModule(mod.envKey)}
+                    style={{
+                      width: 40,
+                      height: 22,
+                      borderRadius: 11,
+                      background: on
+                        ? "rgba(148,120,255,0.4)"
+                        : "rgba(255,255,255,0.08)",
+                      border: `0.5px solid ${on ? "rgba(148,120,255,0.5)" : s.border}`,
+                      position: "relative",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: "50%",
+                        background: on ? s.purple : s.muted,
+                        position: "absolute",
+                        top: 2,
+                        left: on ? 20 : 2,
+                        transition: "left 0.2s",
+                      }}
+                    />
+                  </div>
+                </div>
+                {/* Module-specific fields — show only when enabled */}
+                {on && mod.fields.length > 0 && (
+                  <div
+                    style={{
+                      paddingLeft: 14,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    {mod.fields.map((f) => (
+                      <div key={f.key}>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: 10,
+                            color: s.muted,
+                            letterSpacing: "0.1em",
+                            marginBottom: 6,
+                          }}
+                        >
+                          {f.label}
+                        </label>
+                        <input
+                          value={edits[f.key] ?? ""}
+                          onChange={(e) =>
+                            setEdits((prev) => ({
+                              ...prev,
+                              [f.key]: e.target.value,
+                            }))
+                          }
+                          placeholder={f.placeholder}
+                          style={inputStyle}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Save */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {saveMsg && (
+          <span
+            style={{
+              fontSize: 12,
+              color: saveMsg.includes("✓") ? s.green : s.red,
+            }}
+          >
+            {saveMsg}
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          style={{
+            padding: "10px 24px",
+            background: "rgba(128,96,208,0.2)",
+            border: "0.5px solid rgba(148,120,255,0.4)",
+            borderRadius: 9,
+            color: s.purple,
+            fontFamily: s.mono,
+            fontSize: 12,
+            cursor: "pointer",
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? "Saving..." : "Save & Restart"}
+        </button>
+      </div>
+
+      {/* Warning */}
+      <div
+        style={{
+          fontSize: 11,
+          color: s.muted,
+          lineHeight: 1.6,
+          padding: "10px 14px",
+          background: "rgba(245,158,11,0.05)",
+          border: "0.5px solid rgba(245,158,11,0.15)",
+          borderRadius: 9,
+        }}
+      >
+        ⚠ Saving will write to <code style={{ color: s.amber }}>.env</code> and
+        restart the <code style={{ color: s.amber }}>console-ssh</code> process.
+        Dashboard will reload in ~4 seconds.
+      </div>
+    </div>
+  );
+}
+
 // ─── CV Editor ───────────────────────────────────────────────────────────────
 function CvEditor({
   authFetch,
@@ -1337,16 +1782,26 @@ export default function DashboardPage() {
     window.location.href = "/";
   };
 
+  // Module feature flags from env — graceful disable if not set
+  const modules = {
+    metrics: process.env.NEXT_PUBLIC_ENABLE_METRICS !== "false",
+    docker: process.env.NEXT_PUBLIC_ENABLE_DOCKER !== "false",
+    pm2: process.env.NEXT_PUBLIC_ENABLE_PM2 !== "false",
+    files: process.env.NEXT_PUBLIC_ENABLE_FILES !== "false",
+    cv: process.env.NEXT_PUBLIC_ENABLE_CV === "true",
+  };
+
   const tabs = [
     { id: "home", icon: "⬡", label: "Dashboard" },
     { id: "terminal", icon: ">_", label: "Terminal" },
-    { id: "monitor", icon: "◈", label: "Monitor" },
-    { id: "docker", icon: "▣", label: "Docker" },
-    { id: "pm2", icon: "⟳", label: "PM2" },
-    { id: "files", icon: "⊟", label: "Files" },
-    ...(process.env.NEXT_PUBLIC_ENABLE_CV === "true"
-      ? [{ id: "cv", icon: "✎", label: "CV Editor" }]
+    ...(modules.metrics
+      ? [{ id: "monitor", icon: "◈", label: "Monitor" }]
       : []),
+    ...(modules.docker ? [{ id: "docker", icon: "▣", label: "Docker" }] : []),
+    ...(modules.pm2 ? [{ id: "pm2", icon: "⟳", label: "PM2" }] : []),
+    ...(modules.files ? [{ id: "files", icon: "⊟", label: "Files" }] : []),
+    ...(modules.cv ? [{ id: "cv", icon: "✎", label: "CV Editor" }] : []),
+    { id: "settings", icon: "⚙", label: "Settings" },
   ] as const;
 
   return (
@@ -2962,6 +3417,9 @@ export default function DashboardPage() {
 
           {/* ── CV EDITOR ── */}
           {tab === "cv" && <CvEditor authFetch={authFetch} s={s} />}
+
+          {/* ── SETTINGS ── */}
+          {tab === "settings" && <SettingsTab authFetch={authFetch} s={s} />}
         </div>
       </main>
     </div>
