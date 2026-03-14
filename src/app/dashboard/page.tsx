@@ -269,22 +269,26 @@ function FileEditor({
   downloadFile: (path: string) => void;
   s: S;
 }) {
-  const [editContent, setEditContent] = useState(fileContent.content);
+  // originalContent is fixed at mount — editContent tracks changes
+  const originalContent = fileContent.content;
+  const [editContent, setEditContent] = useState(originalContent);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const isDirty = editContent !== fileContent.content;
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  const isDirty = editContent !== originalContent;
   const fullPath = `${filePath}/${fileContent.name}`;
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveMsg(null);
     const res = await authFetch("/api/files", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: fullPath, content: editContent }),
     });
     setSaving(false);
-    if (res?.ok) setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setSaveMsg(res?.ok ? "Saved ✓" : "Save failed");
+    setTimeout(() => setSaveMsg(null), 2500);
   };
 
   const btnBase: React.CSSProperties = {
@@ -329,32 +333,44 @@ function FileEditor({
           }}
         >
           {fileContent.name}
-          {isDirty && (
+          {isDirty && !saveMsg && (
             <span style={{ color: s.amber, marginLeft: 6, fontSize: 9 }}>
-              ● unsaved
+              ● modified
+            </span>
+          )}
+          {saveMsg && (
+            <span
+              style={{
+                color: saveMsg.includes("✓") ? s.green : s.red,
+                marginLeft: 6,
+                fontSize: 9,
+              }}
+            >
+              {saveMsg}
             </span>
           )}
         </span>
-        {/* Save — dimmed until dirty */}
+        {/* Save — visible only when dirty */}
         <button
           onClick={handleSave}
           disabled={!isDirty || saving}
           style={{
             ...btnBase,
             color: isDirty ? s.green : s.muted,
-            borderColor: isDirty ? "rgba(74,222,128,0.3)" : s.border,
-            opacity: isDirty ? 1 : 0.4,
-            cursor: isDirty ? "pointer" : "default",
+            borderColor: isDirty ? "rgba(74,222,128,0.35)" : s.border,
+            opacity: isDirty ? 1 : 0.35,
+            cursor: isDirty ? "pointer" : "not-allowed",
+            transition: "all 0.2s",
           }}
         >
-          {saving ? "Saving..." : saved ? "Saved ✓" : "Save"}
+          {saving ? "Saving..." : "Save"}
         </button>
         {/* Download */}
         <button
           onClick={() => downloadFile(fullPath)}
           style={{ ...btnBase, color: s.purple }}
         >
-          ↓ Download
+          ↓
         </button>
         {/* Close */}
         <button onClick={onClose} style={{ ...btnBase, color: s.muted }}>
@@ -2347,6 +2363,7 @@ export default function DashboardPage() {
               {/* Right panel — file viewer + editor */}
               {fileContent && (
                 <FileEditor
+                  key={fileContent.name}
                   fileContent={fileContent}
                   filePath={filePath}
                   authFetch={authFetch}
