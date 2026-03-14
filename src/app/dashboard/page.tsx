@@ -269,13 +269,13 @@ function FileEditor({
   downloadFile: (path: string) => void;
   s: S;
 }) {
-  // originalContent is fixed at mount — editContent tracks changes
-  const originalContent = fileContent.content;
-  const [editContent, setEditContent] = useState(originalContent);
+  // savedContent tracks the last successfully saved version (not just the initial load)
+  const savedContent = useRef(fileContent.content);
+  const [editContent, setEditContent] = useState(fileContent.content);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
-  const isDirty = editContent !== originalContent;
+  const isDirty = editContent !== savedContent.current;
   const fullPath = `${filePath}/${fileContent.name}`;
 
   const handleSave = async () => {
@@ -287,7 +287,13 @@ function FileEditor({
       body: JSON.stringify({ path: fullPath, content: editContent }),
     });
     setSaving(false);
-    setSaveMsg(res?.ok ? "Saved ✓" : "Save failed");
+    if (res?.ok) {
+      // Update saved baseline so isDirty compares against this version
+      savedContent.current = editContent;
+      setSaveMsg("Saved ✓");
+    } else {
+      setSaveMsg("Save failed");
+    }
     setTimeout(() => setSaveMsg(null), 2500);
   };
 
@@ -313,7 +319,6 @@ function FileEditor({
         overflow: "hidden",
       }}
     >
-      {/* Header: filename | Save | Download | Close */}
       <div
         style={{
           display: "flex",
@@ -350,7 +355,6 @@ function FileEditor({
             </span>
           )}
         </span>
-        {/* Save — visible only when dirty */}
         <button
           onClick={handleSave}
           disabled={!isDirty || saving}
@@ -365,20 +369,16 @@ function FileEditor({
         >
           {saving ? "Saving..." : "Save"}
         </button>
-        {/* Download */}
         <button
           onClick={() => downloadFile(fullPath)}
           style={{ ...btnBase, color: s.purple }}
         >
           ↓
         </button>
-        {/* Close */}
         <button onClick={onClose} style={{ ...btnBase, color: s.muted }}>
           ✕
         </button>
       </div>
-
-      {/* Editable textarea */}
       <textarea
         value={editContent}
         onChange={(e) => setEditContent(e.target.value)}
@@ -457,34 +457,73 @@ function DeployPanel({
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let deployStarted = false;
 
-    while (true) {
-      const { done: streamDone, value } = await reader.read();
-      if (streamDone) break;
-      buf += decoder.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() ?? "";
-      for (const part of parts) {
-        const eventMatch = part.match(/^event: (\w+)/m);
-        const dataMatch = part.match(/^data: (.+)/m);
-        if (!eventMatch || !dataMatch) continue;
-        const event = eventMatch[1];
-        const data = JSON.parse(dataMatch[1]);
-        if (event === "step") {
-          setSteps((prev) => {
-            const idx = prev.findIndex((s) => s.step === data.step);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = data;
-              return next;
-            }
-            return [...prev, data];
-          });
+    try {
+      while (true) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          const eventMatch = part.match(/^event: (\w+)/m);
+          const dataMatch = part.match(/^data: (.+)/m);
+          if (!eventMatch || !dataMatch) continue;
+          const event = eventMatch[1];
+          const data = JSON.parse(dataMatch[1]);
+          if (event === "step") {
+            deployStarted = true;
+            setSteps((prev) => {
+              const idx = prev.findIndex((s) => s.step === data.step);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = data;
+                return next;
+              }
+              return [...prev, data];
+            });
+          }
+          if (event === "done") {
+            setDone(data.message);
+          }
         }
-        if (event === "done") setDone(data.message);
       }
+    } catch {
+      // Stream died — likely because pm2 reload killed the process, expected
     }
+
     setDeploying(false);
+
+    // If deploy actually started (not just "already up to date"), poll until server is back
+    if (deployStarted) {
+      setDone("Deploy triggered. Waiting for server to restart...");
+      pollUntilBack();
+    }
+  };
+
+  // Poll /api/auth/token every 1s until server responds, then redirect
+  const pollUntilBack = () => {
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await fetch("/api/auth/token", { cache: "no-store" });
+        if (res.ok || res.status === 401) {
+          // Server is back up
+          clearInterval(interval);
+          window.location.href = "/dashboard";
+        }
+      } catch {
+        // Still down — keep polling
+      }
+      if (attempts > 30) {
+        // Give up after 30s
+        clearInterval(interval);
+        setDone("Server may still be restarting. Refresh manually.");
+        setDeploying(false);
+      }
+    }, 1000);
   };
 
   const statusColor = (status: string) =>
@@ -2353,6 +2392,37 @@ export default function DashboardPage() {
                               zip
                             </button>
                           )}
+                          <button
+                            onClick={async () => {
+                              if (
+                                !confirm(
+                                  `Delete ${f.type === "dir" ? "folder" : "file"} "${f.name}"?`,
+                                )
+                              )
+                                return;
+                              const res = await authFetch(
+                                `/api/files?path=${encodeURIComponent(`${filePath}/${f.name}`)}&type=${f.type}`,
+                                { method: "DELETE" },
+                              );
+                              if (res?.ok) {
+                                if (fileContent?.name === f.name)
+                                  setFileContent(null);
+                                fetchFiles(filePath);
+                              }
+                            }}
+                            style={{
+                              padding: "2px 6px",
+                              background: "transparent",
+                              border: `1px solid rgba(248,113,113,0.2)`,
+                              borderRadius: 3,
+                              color: s.red,
+                              fontFamily: s.mono,
+                              fontSize: 8,
+                              cursor: "pointer",
+                            }}
+                          >
+                            ✕
+                          </button>
                         </div>
                       </div>
                     ))

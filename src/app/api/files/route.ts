@@ -275,3 +275,65 @@ export async function PUT(request: NextRequest) {
     });
   });
 }
+
+// Delete file or folder (folder uses rm -rf via exec)
+export async function DELETE(request: NextRequest) {
+  if (!authCheck(request))
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const url = new URL(request.url);
+  const path = safePath(url.searchParams.get("path") || "");
+  const type = url.searchParams.get("type") ?? "file"; // "file" | "dir"
+
+  if (path === "/root" || path === "/home")
+    return NextResponse.json(
+      { error: "Cannot delete root directory" },
+      { status: 400 },
+    );
+
+  const ssh = await getSSHClient();
+
+  if (type === "dir") {
+    // Use exec to rm -rf directory
+    return new Promise<NextResponse>((resolve) => {
+      ssh.exec(`rm -rf "${path}"`, (err, stream) => {
+        if (err) {
+          ssh.end();
+          return resolve(
+            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
+          );
+        }
+        stream.on("close", () => {
+          ssh.end();
+          resolve(NextResponse.json({ success: true }));
+        });
+        stream.on("error", () => {
+          ssh.end();
+          resolve(
+            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
+          );
+        });
+      });
+    });
+  }
+
+  // Delete file via SFTP
+  return new Promise<NextResponse>((resolve) => {
+    ssh.sftp((err, sftp) => {
+      if (err) {
+        ssh.end();
+        return resolve(
+          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
+        );
+      }
+      sftp.unlink(path, (err) => {
+        ssh.end();
+        if (err)
+          return resolve(
+            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
+          );
+        resolve(NextResponse.json({ success: true }));
+      });
+    });
+  });
+}
