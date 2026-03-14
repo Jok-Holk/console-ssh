@@ -1,0 +1,217 @@
+@page {
+  size: A4;
+  margin: 1.3cm 1.5cm;
+}
+
+@font-face {
+  font-family: "Times New Roman";
+  src: url("fonts/times.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --primary: #4a0080;
+  --accent: #7b2fbf;
+  --accent-light: #f5eeff;
+  --border: #ddd0f5;
+  --text: #1a1a2e;
+  --muted: #5a5a72;
+}
+
+/* ===== BODY ===== */
+body {
+  font-family: "Times New Roman", serif;
+  font-size: 11.5pt;
+  line-height: 1.42;
+  color: var(--text);
+  background: white;
+
+  /* Fix rớt chữ tiếng Việt */
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: none;
+  -webkit-hyphens: none;
+  text-align: left;
+
+  -webkit-text-stroke: 0px transparent;
+}
+
+/* ===== HEADINGS ===== */
+h1,
+h2,
+h3,
+h4,
+h5 {
+  page-break-after: avoid;
+  break-after: avoid;
+  -webkit-text-stroke: 0px transparent;
+  font-synthesis: none;
+  text-shadow: none;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+h1 {
+  font-size: 21pt;
+  font-weight: bold;
+  text-align: center;
+  color: #4a0080;
+  margin-bottom: 0.1cm;
+  -webkit-font-smoothing: antialiased;
+  paint-order: fill;
+}
+
+h5 {
+  font-size: 11pt;
+  font-weight: normal;
+  font-style: italic;
+  text-align: center;
+  color: var(--accent);
+  margin-bottom: 0.45cm;
+  padding-bottom: 0.28cm;
+  border-bottom: 0.8pt solid var(--accent);
+}
+
+hr {
+  height: 1px;
+  background-color: var(--border);
+  border: none;
+  margin: 0.25cm 0;
+}
+
+h2 {
+  font-size: 11.5pt;
+  font-weight: bold;
+  color: var(--accent);
+  margin-top: 0.4cm;
+  margin-bottom: 0.18cm;
+  text-transform: uppercase;
+  letter-spacing: 0.5pt;
+  border-bottom: 0.5pt solid var(--border);
+  padding-bottom: 0.08cm;
+}
+
+h3 {
+  font-size: 11.5pt;
+  font-weight: bold;
+  color: var(--text);
+  margin-top: 0.22cm;
+  margin-bottom: 0.08cm;
+  page-break-after: avoid;
+  break-after: avoid;
+}
+
+h4 {
+  font-size: 11pt;
+  font-weight: normal;
+  color: var(--text);
+  margin-bottom: 0.04cm;
+}
+
+/* ===== PARAGRAPH ===== */
+p {
+  margin-bottom: 0.18cm;
+  text-align: left;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: none;
+  orphans: 3;
+  widows: 3;
+}
+
+/* ===== LIST ===== */
+ul,
+ol {
+  margin-left: 0.6cm;
+  margin-bottom: 0.12cm;
+  padding-left: 0;
+}
+
+ul {
+  list-style: none;
+}
+
+ul li::before {
+  content: "- ";
+  color: var(--accent);
+  font-weight: bold;
+}
+
+li {
+  margin-bottom: 0.07cm;
+  line-height: 1.42;
+  text-align: left;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: none;
+  widows: 3;
+  orphans: 3;
+}
+
+/* Giữ h3 dính với nội dung sau */
+h3 + p,
+h3 + ul,
+h3 + em {
+  page-break-before: avoid;
+  break-before: avoid;
+}
+
+/* ===== TABLE ===== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.18cm;
+  font-size: 11pt;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+th,
+td {
+  border: 0.5pt solid var(--border);
+  padding: 0.16cm 0.22cm;
+  text-align: left;
+}
+
+th {
+  background-color: var(--accent-light);
+  font-weight: bold;
+  color: var(--primary);
+}
+
+/* ===== LINK ===== */
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* ===== EM / ITALIC ===== */
+em {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 11pt;
+}
+
+/* ===== STRONG ===== */
+strong {
+  color: var(--text);
+  font-weight: bold;
+}
+
+/* ===== FOOTER ===== */
+footer {
+  text-align: center;
+  font-size: 9pt;
+  color: var(--muted);
+  margin-top: 0.7cm;
+  border-top: 0.5pt solid var(--border);
+  padding-top: 0.25cm;
+}
