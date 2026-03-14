@@ -4,6 +4,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Metrics {
   cpu: number;
+  cpuInfo: {
+    model: string;
+    cores: number;
+    threads: number;
+    curFreqMhz: number;
+    maxFreqMhz: number;
+  };
   ram: {
     total: number;
     used: number;
@@ -11,8 +18,18 @@ interface Metrics {
     buffers: number;
     cached: number;
     pct: number;
+    swapTotal: number;
+    swapUsed: number;
+    swapPct: number;
   };
-  disk: { total: number; used: number; free: number; pct: number };
+  disk: {
+    total: number;
+    used: number;
+    free: number;
+    pct: number;
+    readSec: number;
+    writeSec: number;
+  };
   uptime: string;
   load: { "1m": string; "5m": string; "15m": string };
   network: { rxSec: number; txSec: number; rxTotal: number; txTotal: number };
@@ -1538,80 +1555,124 @@ export default function DashboardPage() {
               }}
             >
               {/* CPU */}
-              <div style={card()}>
+              <div style={{ ...card(), borderTop: `2px solid ${s.purple}` }}>
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    alignItems: "center",
+                    alignItems: "flex-start",
                     marginBottom: 10,
                   }}
                 >
-                  <span
-                    style={{
-                      fontSize: 9,
-                      color: s.muted,
-                      letterSpacing: "0.14em",
-                    }}
-                  >
-                    CPU
-                  </span>
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 10 }}
-                  >
-                    <Sparkline data={cpuHistory} color={s.purple} />
-                    <span
-                      style={{ fontSize: 22, fontWeight: 700, color: s.purple }}
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: s.muted,
+                        letterSpacing: "0.14em",
+                        marginBottom: 6,
+                      }}
+                    >
+                      CPU
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 30,
+                        fontWeight: 700,
+                        color: s.purple,
+                        lineHeight: 1,
+                      }}
                     >
                       {metrics.cpu}%
-                    </span>
+                    </div>
                   </div>
+                  <Sparkline data={cpuHistory} color={s.purple} />
                 </div>
                 <Bar pct={metrics.cpu} />
                 <div
                   style={{
-                    marginTop: 8,
-                    display: "flex",
-                    gap: 12,
+                    marginTop: 10,
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "4px 12px",
                     fontSize: 10,
-                    color: s.muted,
                   }}
                 >
-                  <span>1m: {metrics.load["1m"]}</span>
-                  <span>5m: {metrics.load["5m"]}</span>
-                  <span>15m: {metrics.load["15m"]}</span>
+                  {(
+                    [
+                      [
+                        "Cores",
+                        `${metrics.cpuInfo.cores}c / ${metrics.cpuInfo.threads}t`,
+                      ],
+                      ["Freq", `${metrics.cpuInfo.curFreqMhz} MHz`],
+                      ["Max", `${metrics.cpuInfo.maxFreqMhz} MHz`],
+                      ["Load 1m", metrics.load["1m"]],
+                      ["Load 5m", metrics.load["5m"]],
+                      ["Load 15m", metrics.load["15m"]],
+                    ] as [string, string][]
+                  ).map(([k, v]) => (
+                    <div
+                      key={k}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        padding: "3px 0",
+                        borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                        fontSize: 10,
+                      }}
+                    >
+                      <span style={{ color: s.muted }}>{k}</span>
+                      <span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontSize: 9,
+                    color: s.muted,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {metrics.cpuInfo.model}
                 </div>
               </div>
 
               {/* RAM */}
-              <div style={card()}>
+              <div style={{ ...card(), borderTop: `2px solid ${s.cyan}` }}>
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    alignItems: "center",
+                    alignItems: "flex-start",
                     marginBottom: 10,
                   }}
                 >
-                  <span
-                    style={{
-                      fontSize: 9,
-                      color: s.muted,
-                      letterSpacing: "0.14em",
-                    }}
-                  >
-                    MEMORY
-                  </span>
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 10 }}
-                  >
-                    <Sparkline data={ramHistory} color={s.cyan} />
-                    <span
-                      style={{ fontSize: 22, fontWeight: 700, color: s.cyan }}
+                  <div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: s.muted,
+                        letterSpacing: "0.14em",
+                        marginBottom: 6,
+                      }}
+                    >
+                      MEMORY
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 30,
+                        fontWeight: 700,
+                        color: s.cyan,
+                        lineHeight: 1,
+                      }}
                     >
                       {metrics.ram.pct}%
-                    </span>
+                    </div>
                   </div>
+                  <Sparkline data={ramHistory} color={s.cyan} />
                 </div>
                 <Bar pct={metrics.ram.pct} color="cyan" />
                 <div
@@ -1619,22 +1680,33 @@ export default function DashboardPage() {
                     marginTop: 10,
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr",
-                    gap: 4,
+                    gap: "4px 12px",
                     fontSize: 10,
                   }}
                 >
-                  {[
-                    ["Used", fmtKB(metrics.ram.used)],
-                    ["Free", fmtKB(metrics.ram.free)],
-                    ["Buffers", fmtKB(metrics.ram.buffers)],
-                    ["Cached", fmtKB(metrics.ram.cached)],
-                    ["Total", fmtKB(metrics.ram.total)],
-                  ].map(([k, v]) => (
+                  {(
+                    [
+                      ["Used", fmtKB(metrics.ram.used)],
+                      ["Free", fmtKB(metrics.ram.free)],
+                      ["Buffers", fmtKB(metrics.ram.buffers)],
+                      ["Cached", fmtKB(metrics.ram.cached)],
+                      ["Total", fmtKB(metrics.ram.total)],
+                      [
+                        "Swap",
+                        metrics.ram.swapTotal > 0
+                          ? `${fmtKB(metrics.ram.swapUsed)} / ${fmtKB(metrics.ram.swapTotal)}`
+                          : "—",
+                      ],
+                    ] as [string, string][]
+                  ).map(([k, v]) => (
                     <div
                       key={k}
                       style={{
                         display: "flex",
                         justifyContent: "space-between",
+                        padding: "3px 0",
+                        borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                        fontSize: 10,
                       }}
                     >
                       <span style={{ color: s.muted }}>{k}</span>
@@ -1645,38 +1717,116 @@ export default function DashboardPage() {
               </div>
 
               {/* DISK */}
-              <div style={card()}>
+              <div style={{ ...card(), borderTop: `2px solid ${s.green}` }}>
                 <div
                   style={{
                     fontSize: 9,
                     color: s.muted,
                     letterSpacing: "0.14em",
-                    marginBottom: 10,
+                    marginBottom: 6,
                   }}
                 >
                   DISK
                 </div>
+                <div
+                  style={{
+                    fontSize: 30,
+                    fontWeight: 700,
+                    color: s.green,
+                    lineHeight: 1,
+                    marginBottom: 8,
+                  }}
+                >
+                  {metrics.disk.pct}%
+                </div>
                 <Bar pct={metrics.disk.pct} color="green" />
                 <div
                   style={{
-                    marginTop: 8,
-                    display: "flex",
-                    gap: 16,
+                    marginTop: 10,
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "4px 12px",
                     fontSize: 10,
+                    marginBottom: 10,
                   }}
                 >
-                  <span style={{ color: s.muted }}>Used</span>
-                  <span>
-                    {metrics.disk.used}MB / {metrics.disk.total}MB
-                  </span>
-                  <span style={{ color: s.muted, marginLeft: "auto" }}>
-                    Free: {metrics.disk.free}MB
-                  </span>
+                  {(
+                    [
+                      ["Used", `${metrics.disk.used}MB`],
+                      ["Free", `${metrics.disk.free}MB`],
+                      ["Total", `${metrics.disk.total}MB`],
+                    ] as [string, string][]
+                  ).map(([k, v]) => (
+                    <div
+                      key={k}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        padding: "3px 0",
+                        borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                        fontSize: 10,
+                      }}
+                    >
+                      <span style={{ color: s.muted }}>{k}</span>
+                      <span>{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      background: "rgba(0,0,0,0.25)",
+                      borderRadius: 7,
+                      padding: "8px 10px",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div
+                      style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
+                    >
+                      ▼ READ
+                    </div>
+                    <div
+                      style={{ fontSize: 15, fontWeight: 700, color: s.green }}
+                    >
+                      {fmt(metrics.disk.readSec)}/s
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      background: "rgba(0,0,0,0.25)",
+                      borderRadius: 7,
+                      padding: "8px 10px",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div
+                      style={{ fontSize: 9, color: s.muted, marginBottom: 4 }}
+                    >
+                      ▲ WRITE
+                    </div>
+                    <div
+                      style={{ fontSize: 15, fontWeight: 700, color: s.amber }}
+                    >
+                      {fmt(metrics.disk.writeSec)}/s
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Network stats */}
-              <div style={card()}>
+              {/* NETWORK */}
+              <div
+                style={{
+                  ...card(),
+                  borderTop: `2px solid rgba(34,211,238,0.6)`,
+                }}
+              >
                 <div
                   style={{
                     fontSize: 9,
@@ -1692,14 +1842,13 @@ export default function DashboardPage() {
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr",
                     gap: 8,
-                    marginBottom: 8,
                   }}
                 >
                   <div
                     style={{
-                      padding: "10px",
                       background: "rgba(0,0,0,0.25)",
-                      borderRadius: 8,
+                      borderRadius: 7,
+                      padding: "10px",
                       textAlign: "center",
                     }}
                   >
@@ -1713,15 +1862,15 @@ export default function DashboardPage() {
                     >
                       {fmt(metrics.network.rxSec)}/s
                     </div>
-                    <div style={{ fontSize: 9, color: s.muted, marginTop: 2 }}>
+                    <div style={{ fontSize: 9, color: s.muted, marginTop: 3 }}>
                       total: {fmt(metrics.network.rxTotal)}
                     </div>
                   </div>
                   <div
                     style={{
-                      padding: "10px",
                       background: "rgba(0,0,0,0.25)",
-                      borderRadius: 8,
+                      borderRadius: 7,
+                      padding: "10px",
                       textAlign: "center",
                     }}
                   >
@@ -1735,21 +1884,21 @@ export default function DashboardPage() {
                     >
                       {fmt(metrics.network.txSec)}/s
                     </div>
-                    <div style={{ fontSize: 9, color: s.muted, marginTop: 2 }}>
+                    <div style={{ fontSize: 9, color: s.muted, marginTop: 3 }}>
                       total: {fmt(metrics.network.txTotal)}
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Network realtime chart — full width */}
+              {/* Network chart — full width */}
               <div style={{ ...card(), gridColumn: "1 / 3" }}>
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    marginBottom: 12,
+                    marginBottom: 10,
                   }}
                 >
                   <span
