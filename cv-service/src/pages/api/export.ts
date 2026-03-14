@@ -31,6 +31,21 @@ async function mdToPdf(md: string, lang: string): Promise<ArrayBuffer> {
     css = readFileSync(cssPath, "utf8");
   } catch {}
 
+  // Embed font as base64 so Puppeteer can load it without a file server
+  let fontBase64 = "";
+  try {
+    const fontPath = join(process.cwd(), "public", "fonts", "times.ttf");
+    fontBase64 = readFileSync(fontPath).toString("base64");
+  } catch {}
+
+  // Replace relative font URL with base64 data URI
+  if (fontBase64) {
+    css = css.replace(
+      /src:\s*url\(['"]?fonts\/times\.ttf['"]?\)[^;]*/,
+      `src: url('data:font/truetype;base64,${fontBase64}') format('truetype')`,
+    );
+  }
+
   const body = await marked.parse(md);
 
   const html = `<!DOCTYPE html>
