@@ -8,17 +8,16 @@ export const prerender = false;
 // Lazily resolve Chromium path — works on Ubuntu VPS
 function getChromiumPath(): string {
   const candidates = [
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
+    process.env.CHROMIUM_PATH ?? "",
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
-    process.env.CHROMIUM_PATH ?? "",
+    "/usr/bin/chromium",
   ];
   for (const p of candidates) {
     if (p && existsSync(p)) return p;
   }
   throw new Error(
-    "Chromium not found. Install with: apt install chromium-browser",
+    "Chrome not found. Install with: apt install google-chrome-stable",
   );
 }
 
