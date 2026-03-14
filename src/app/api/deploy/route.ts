@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
-import { execSync as exec } from "child_process";
+import { execSync } from "child_process";
+import { spawn } from "child_process";
 import jwt from "jsonwebtoken";
 
 function authCheck(request: NextRequest): boolean {
@@ -13,49 +14,46 @@ function authCheck(request: NextRequest): boolean {
   }
 }
 
-// Run a shell command and return stdout+stderr combined
-function run(cmd: string, cwd: string): string {
-  try {
-    return exec(cmd, { cwd, encoding: "utf8", timeout: 120000, stdio: "pipe" });
-  } catch (e: unknown) {
-    if (e && typeof e === "object" && "stdout" in e) {
-      const err = e as { stdout?: string; stderr?: string };
-      return (err.stdout ?? "") + (err.stderr ?? "");
-    }
-    return String(e);
-  }
-}
-
 const APP_DIR = process.env.APP_DIR ?? "/root/console-ssh";
 const PM2_NAME = process.env.PM2_APP_NAME ?? "console-ssh";
 
-// GET — check git status: any remote changes?
+// GET — check git status
 export async function GET(request: NextRequest) {
   if (!authCheck(request))
     return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const fetch = run("git fetch origin", APP_DIR);
-  const status = run("git status -sb", APP_DIR);
-  const log = run("git log HEAD..origin/main --oneline", APP_DIR);
-  const current = run("git log -1 --format='%h %s %cr'", APP_DIR).trim();
-
-  const hasUpdates = log.trim().length > 0;
-
-  return Response.json({
-    hasUpdates,
-    current,
-    pending: log.trim() ? log.trim().split("\n") : [],
-    status: status.trim(),
-    fetchLog: fetch.trim(),
-  });
+  try {
+    execSync("git fetch origin", { cwd: APP_DIR, timeout: 15000 });
+    const status = execSync("git status -sb", {
+      cwd: APP_DIR,
+      encoding: "utf8",
+    }).trim();
+    const log = execSync("git log HEAD..origin/main --oneline", {
+      cwd: APP_DIR,
+      encoding: "utf8",
+    }).trim();
+    const current = execSync("git log -1 --format='%h %s %cr'", {
+      cwd: APP_DIR,
+      encoding: "utf8",
+    }).trim();
+    return Response.json({
+      hasUpdates: log.length > 0,
+      current,
+      pending: log ? log.split("\n") : [],
+      status,
+    });
+  } catch (e) {
+    return Response.json({ error: String(e) }, { status: 500 });
+  }
 }
 
-// POST — run full deploy: git pull → npm build → pm2 reload
+// POST — stream deploy steps live using spawn (non-blocking)
 export async function POST(request: NextRequest) {
   if (!authCheck(request))
     return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const encoder = new TextEncoder();
+
   const stream = new ReadableStream({
     start(controller) {
       let closed = false;
@@ -73,19 +71,103 @@ export async function POST(request: NextRequest) {
         }
       };
 
-      // Run deploy steps async — SSE streams each step result live
-      (async () => {
-        send("step", { step: "git pull", status: "running" });
-        const pull = run("git pull origin main", APP_DIR);
-        send("step", { step: "git pull", status: "done", output: pull.trim() });
+      // Run a command with spawn — streams stdout/stderr live
+      const runStep = (
+        stepName: string,
+        cmd: string,
+        args: string[],
+        cwd: string,
+      ): Promise<boolean> => {
+        return new Promise((resolve) => {
+          send("step", { step: stepName, status: "running" });
 
-        if (pull.includes("Already up to date")) {
-          send("step", {
-            step: "build",
-            status: "skipped",
-            output: "No changes — skipping build.",
+          const proc = spawn(cmd, args, { cwd, shell: false });
+          let output = "";
+
+          const onData = (chunk: Buffer) => {
+            const text = chunk.toString();
+            output += text;
+            // Stream output chunks live as they arrive
+            send("output", { step: stepName, chunk: text });
+          };
+
+          proc.stdout.on("data", onData);
+          proc.stderr.on("data", onData);
+
+          proc.on("close", (code) => {
+            send("step", {
+              step: stepName,
+              status: code === 0 ? "done" : "error",
+              output: output.slice(-1000),
+            });
+            resolve(code === 0);
           });
-          send("done", { success: true, message: "Already up to date." });
+
+          proc.on("error", (err) => {
+            send("step", {
+              step: stepName,
+              status: "error",
+              output: err.message,
+            });
+            resolve(false);
+          });
+        });
+      };
+
+      (async () => {
+        // Step 1: git pull
+        const pulled = await runStep(
+          "git pull",
+          "git",
+          ["pull", "origin", "main"],
+          APP_DIR,
+        );
+
+        // Check if already up to date
+        if (pulled) {
+          const lastOutput = "";
+          // Check via git status
+          try {
+            const status = execSync("git status --porcelain", {
+              cwd: APP_DIR,
+              encoding: "utf8",
+            }).trim();
+            if (status === "") {
+              // Might be already up to date — check log
+              const behind = execSync("git log HEAD..origin/main --oneline", {
+                cwd: APP_DIR,
+                encoding: "utf8",
+              }).trim();
+              if (behind === "") {
+                send("step", {
+                  step: "npm build",
+                  status: "skipped",
+                  output: "Already up to date — no build needed.",
+                });
+                send("done", { success: true, message: "Already up to date." });
+                if (!closed) {
+                  try {
+                    controller.close();
+                  } catch {}
+                }
+                return;
+              }
+            }
+          } catch {}
+        }
+
+        // Step 2: npm run build
+        const built = await runStep(
+          "npm build",
+          "npm",
+          ["run", "build"],
+          APP_DIR,
+        );
+        if (!built) {
+          send("done", {
+            success: false,
+            message: "Build failed. Check logs above.",
+          });
           if (!closed) {
             try {
               controller.close();
@@ -94,30 +176,27 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        send("step", { step: "npm build", status: "running" });
-        const build = run("npm run build", APP_DIR);
-        send("step", {
-          step: "npm build",
-          status: "done",
-          output: build.trim(),
-        });
-
-        // pm2 reload for zero-downtime (graceful restart)
-        send("step", { step: "pm2 reload", status: "running" });
-        const reload = run(`pm2 reload ${PM2_NAME} --update-env`, APP_DIR);
-        send("step", {
-          step: "pm2 reload",
-          status: "done",
-          output: reload.trim(),
-        });
+        // Step 3: pm2 reload (zero-downtime)
+        await runStep(
+          "pm2 reload",
+          "pm2",
+          ["reload", PM2_NAME, "--update-env"],
+          APP_DIR,
+        );
 
         send("done", { success: true, message: "Deploy complete." });
-        if (!closed) {
-          try {
-            controller.close();
-          } catch {}
-        }
+        // Note: controller may not close cleanly since pm2 reload kills this process
+        try {
+          if (!closed) controller.close();
+        } catch {}
       })();
+
+      request.signal.addEventListener("abort", () => {
+        closed = true;
+        try {
+          controller.close();
+        } catch {}
+      });
     },
   });
 
@@ -126,6 +205,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no", // Tell nginx not to buffer SSE
     },
   });
 }

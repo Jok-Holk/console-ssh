@@ -476,6 +476,10 @@ function DeployPanel({
     const decoder = new TextDecoder();
     let buf = "",
       deployStarted = false;
+
+    // Track live output per step
+    const liveOutput: Record<string, string> = {};
+
     try {
       while (true) {
         const { done: sd, value } = await reader.read();
@@ -488,25 +492,44 @@ function DeployPanel({
           const dm = part.match(/^data: (.+)/m);
           if (!em || !dm) continue;
           const data = JSON.parse(dm[1]);
+
           if (em[1] === "step") {
             deployStarted = true;
             setSteps((prev) => {
               const idx = prev.findIndex((s) => s.step === data.step);
+              // Merge accumulated live output into final step
+              const merged = {
+                ...data,
+                output: data.output ?? liveOutput[data.step] ?? "",
+              };
               if (idx >= 0) {
                 const n = [...prev];
-                n[idx] = data;
+                n[idx] = merged;
                 return n;
               }
-              return [...prev, data];
+              return [...prev, merged];
             });
           }
+
+          // Realtime output chunks — append to running step
+          if (em[1] === "output") {
+            liveOutput[data.step] = (liveOutput[data.step] ?? "") + data.chunk;
+            setSteps((prev) =>
+              prev.map((s) =>
+                s.step === data.step
+                  ? { ...s, output: liveOutput[data.step] }
+                  : s,
+              ),
+            );
+          }
+
           if (em[1] === "done") setDone(data.message);
         }
       }
     } catch {}
     setDeploying(false);
     if (deployStarted) {
-      setDone("Deploy triggered. Waiting for server...");
+      setDone("Deploy triggered. Waiting for server to come back...");
       pollUntilBack();
     }
   };
@@ -1360,7 +1383,7 @@ export default function DashboardPage() {
               <div style={{ ...card(), gridColumn: "1 / 4" }}>
                 <div
                   style={{
-                    fontSize: 10,
+                    fontSize: 11,
                     color: s.muted,
                     letterSpacing: "0.13em",
                     marginBottom: 14,
@@ -1371,7 +1394,7 @@ export default function DashboardPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(5, 1fr)",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
                     gap: 10,
                   }}
                 >
@@ -1933,23 +1956,31 @@ export default function DashboardPage() {
           {tab === "pm2" && (
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: pm2Logs ? "1fr 1fr" : "1fr",
+                display: "flex",
+                flexDirection: "column",
                 gap: 14,
+                height: "calc(100vh - 120px)",
               }}
             >
-              <div style={card()}>
+              {/* Process list */}
+              <div
+                style={{
+                  ...card(),
+                  flex: pm2Logs ? "0 0 auto" : 1,
+                  overflow: "auto",
+                }}
+              >
                 <div
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    marginBottom: 14,
+                    marginBottom: 16,
                   }}
                 >
                   <span
                     style={{
-                      fontSize: 10,
+                      fontSize: 11,
                       color: s.muted,
                       letterSpacing: "0.13em",
                     }}
@@ -1959,13 +1990,13 @@ export default function DashboardPage() {
                   <button
                     onClick={fetchPm2}
                     style={{
-                      padding: "5px 14px",
+                      padding: "7px 16px",
                       background: "transparent",
                       border: `0.5px solid ${s.border}`,
-                      borderRadius: 7,
+                      borderRadius: 8,
                       color: s.muted,
                       fontFamily: s.mono,
-                      fontSize: 11,
+                      fontSize: 12,
                       cursor: "pointer",
                     }}
                   >
@@ -1978,7 +2009,7 @@ export default function DashboardPage() {
                       textAlign: "center",
                       padding: "40px 0",
                       color: s.muted,
-                      fontSize: 13,
+                      fontSize: 14,
                     }}
                   >
                     No processes
@@ -1988,7 +2019,7 @@ export default function DashboardPage() {
                     <div
                       key={p.id}
                       style={{
-                        padding: "12px 0",
+                        padding: "14px 0",
                         borderBottom: `0.5px solid ${s.border}`,
                       }}
                     >
@@ -1996,28 +2027,28 @@ export default function DashboardPage() {
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: 10,
-                          marginBottom: 8,
+                          gap: 12,
+                          marginBottom: 10,
                         }}
                       >
                         <StatusDot status={p.status} />
                         <span
-                          style={{ fontWeight: 500, fontSize: 13, flex: 1 }}
+                          style={{ fontWeight: 500, fontSize: 14, flex: 1 }}
                         >
                           {p.name}
                         </span>
-                        <span style={{ fontSize: 10, color: s.muted }}>
+                        <span style={{ fontSize: 11, color: s.muted }}>
                           #{p.id} · {p.mode}
                         </span>
                       </div>
                       <div
                         style={{
                           display: "flex",
-                          gap: 16,
-                          fontSize: 11,
+                          gap: 20,
+                          fontSize: 12,
                           color: s.muted,
-                          marginBottom: 10,
-                          paddingLeft: 16,
+                          marginBottom: 12,
+                          paddingLeft: 19,
                         }}
                       >
                         <span>
@@ -2049,7 +2080,14 @@ export default function DashboardPage() {
                           </span>
                         </span>
                       </div>
-                      <div style={{ display: "flex", gap: 7, paddingLeft: 16 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          paddingLeft: 19,
+                          flexWrap: "wrap",
+                        }}
+                      >
                         {(["restart", "stop", "start", "delete"] as const).map(
                           (action) => (
                             <button
@@ -2064,10 +2102,10 @@ export default function DashboardPage() {
                                 }).then(() => setTimeout(fetchPm2, 1000))
                               }
                               style={{
-                                padding: "4px 10px",
+                                padding: "6px 14px",
                                 background: "transparent",
-                                border: `0.5px solid ${action === "delete" ? "rgba(248,113,113,0.25)" : action === "stop" ? "rgba(245,158,11,0.25)" : action === "restart" ? "rgba(196,173,255,0.2)" : "rgba(74,222,128,0.22)"}`,
-                                borderRadius: 6,
+                                border: `0.5px solid ${action === "delete" ? "rgba(248,113,113,0.3)" : action === "stop" ? "rgba(245,158,11,0.3)" : action === "restart" ? "rgba(196,173,255,0.25)" : "rgba(74,222,128,0.28)"}`,
+                                borderRadius: 7,
                                 color:
                                   action === "delete"
                                     ? s.red
@@ -2077,7 +2115,7 @@ export default function DashboardPage() {
                                         ? s.purple
                                         : s.green,
                                 fontFamily: s.mono,
-                                fontSize: 10,
+                                fontSize: 12,
                                 cursor: "pointer",
                               }}
                             >
@@ -2090,7 +2128,7 @@ export default function DashboardPage() {
                             logsRef.current?.close();
                             setPm2Logs({ name: p.name, lines: [] });
                             const es = new EventSource(
-                              `/api/pm2/logs?name=${p.name}&lines=100`,
+                              `/api/pm2/logs?name=${p.name}&lines=150`,
                             );
                             logsRef.current = es;
                             es.onmessage = (e) => {
@@ -2099,7 +2137,7 @@ export default function DashboardPage() {
                                 prev
                                   ? {
                                       ...prev,
-                                      lines: [...prev.lines.slice(-199), line],
+                                      lines: [...prev.lines.slice(-299), line],
                                     }
                                   : null,
                               );
@@ -2107,13 +2145,13 @@ export default function DashboardPage() {
                             es.onerror = () => es.close();
                           }}
                           style={{
-                            padding: "4px 10px",
+                            padding: "6px 14px",
                             background: "rgba(56,189,248,0.08)",
-                            border: "0.5px solid rgba(56,189,248,0.2)",
-                            borderRadius: 6,
+                            border: "0.5px solid rgba(56,189,248,0.25)",
+                            borderRadius: 7,
                             color: s.cyan,
                             fontFamily: s.mono,
-                            fontSize: 10,
+                            fontSize: 12,
                             cursor: "pointer",
                           }}
                         >
@@ -2125,12 +2163,15 @@ export default function DashboardPage() {
                 )}
               </div>
 
+              {/* Logs panel — bottom drawer, fixed height */}
               {pm2Logs && (
                 <div
                   style={{
                     ...card(),
+                    height: 280,
                     display: "flex",
                     flexDirection: "column",
+                    flexShrink: 0,
                   }}
                 >
                   <div
@@ -2143,13 +2184,18 @@ export default function DashboardPage() {
                   >
                     <span
                       style={{
-                        fontSize: 10,
+                        fontSize: 11,
                         color: s.muted,
                         letterSpacing: "0.13em",
                       }}
                     >
                       LOGS —{" "}
                       <span style={{ color: s.cyan }}>{pm2Logs.name}</span>
+                      <span
+                        style={{ color: s.muted, marginLeft: 10, fontSize: 10 }}
+                      >
+                        ({pm2Logs.lines.length} lines)
+                      </span>
                     </span>
                     <button
                       onClick={() => {
@@ -2157,13 +2203,13 @@ export default function DashboardPage() {
                         setPm2Logs(null);
                       }}
                       style={{
-                        padding: "4px 10px",
+                        padding: "5px 12px",
                         background: "transparent",
                         border: `0.5px solid ${s.border}`,
-                        borderRadius: 6,
+                        borderRadius: 7,
                         color: s.muted,
                         fontFamily: s.mono,
-                        fontSize: 10,
+                        fontSize: 11,
                         cursor: "pointer",
                       }}
                     >
@@ -2179,27 +2225,33 @@ export default function DashboardPage() {
                       padding: "12px 14px",
                     }}
                   >
-                    {pm2Logs.lines.map((line, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          fontSize: 11,
-                          lineHeight: 1.75,
-                          fontFamily: s.mono,
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-all",
-                          color:
-                            line.toLowerCase().includes("error") ||
-                            line.toLowerCase().includes("err")
-                              ? s.red
-                              : line.toLowerCase().includes("warn")
-                                ? s.amber
-                                : "rgba(255,255,255,0.55)",
-                        }}
-                      >
-                        {line}
+                    {pm2Logs.lines.length === 0 ? (
+                      <div style={{ color: s.muted, fontSize: 12 }}>
+                        Waiting for logs...
                       </div>
-                    ))}
+                    ) : (
+                      pm2Logs.lines.map((line, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            fontSize: 12,
+                            lineHeight: 1.7,
+                            fontFamily: s.mono,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-all",
+                            color:
+                              line.toLowerCase().includes("error") ||
+                              line.toLowerCase().includes("err")
+                                ? s.red
+                                : line.toLowerCase().includes("warn")
+                                  ? s.amber
+                                  : "rgba(255,255,255,0.55)",
+                          }}
+                        >
+                          {line}
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -2211,7 +2263,9 @@ export default function DashboardPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: fileContent ? "1fr 1.5fr" : "1fr",
+                gridTemplateColumns: fileContent
+                  ? "minmax(320px, 1fr) 1.5fr"
+                  : "1fr",
                 gap: 14,
                 height: "calc(100vh - 120px)",
               }}
@@ -2229,8 +2283,8 @@ export default function DashboardPage() {
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 5,
-                    marginBottom: 12,
+                    gap: 6,
+                    marginBottom: 14,
                     flexWrap: "wrap",
                   }}
                 >
@@ -2245,11 +2299,11 @@ export default function DashboardPage() {
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            gap: 4,
+                            gap: 5,
                           }}
                         >
                           {i > 0 && (
-                            <span style={{ color: s.muted, fontSize: 11 }}>
+                            <span style={{ color: s.muted, fontSize: 13 }}>
                               /
                             </span>
                           )}
@@ -2260,7 +2314,7 @@ export default function DashboardPage() {
                               border: "none",
                               color: i === arr.length - 1 ? s.text : s.purple,
                               fontFamily: s.mono,
-                              fontSize: 12,
+                              fontSize: 13,
                               cursor: "pointer",
                               padding: 0,
                             }}
@@ -2270,16 +2324,16 @@ export default function DashboardPage() {
                         </span>
                       );
                     })}
-                  <div style={{ marginLeft: "auto", display: "flex", gap: 7 }}>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <label
                       style={{
-                        padding: "4px 10px",
+                        padding: "6px 12px",
                         background: "rgba(148,120,255,0.1)",
-                        border: "0.5px solid rgba(148,120,255,0.25)",
-                        borderRadius: 7,
+                        border: "0.5px solid rgba(148,120,255,0.28)",
+                        borderRadius: 8,
                         color: s.purple,
                         fontFamily: s.mono,
-                        fontSize: 10,
+                        fontSize: 12,
                         cursor: "pointer",
                       }}
                     >
@@ -2305,13 +2359,13 @@ export default function DashboardPage() {
                     <button
                       onClick={() => downloadZip(filePath)}
                       style={{
-                        padding: "4px 10px",
+                        padding: "6px 12px",
                         background: "transparent",
                         border: `0.5px solid ${s.border}`,
-                        borderRadius: 7,
+                        borderRadius: 8,
                         color: s.muted,
                         fontFamily: s.mono,
-                        fontSize: 10,
+                        fontSize: 12,
                         cursor: "pointer",
                       }}
                     >
@@ -2327,7 +2381,7 @@ export default function DashboardPage() {
                         textAlign: "center",
                         padding: "40px 0",
                         color: s.muted,
-                        fontSize: 12,
+                        fontSize: 13,
                       }}
                     >
                       Loading...
@@ -2339,10 +2393,10 @@ export default function DashboardPage() {
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: 9,
-                          padding: "8px 4px",
+                          gap: 10,
+                          padding: "10px 6px",
                           borderBottom: `0.5px solid ${s.border}`,
-                          fontSize: 12,
+                          fontSize: 13,
                         }}
                         onMouseEnter={(e) =>
                           (e.currentTarget.style.background =
@@ -2360,6 +2414,7 @@ export default function DashboardPage() {
                                 : "rgba(255,255,255,0.25)",
                             width: 14,
                             flexShrink: 0,
+                            fontSize: 12,
                           }}
                         >
                           {f.type === "dir" ? "▸" : "·"}
@@ -2370,7 +2425,7 @@ export default function DashboardPage() {
                             color:
                               f.type === "dir"
                                 ? s.text
-                                : "rgba(255,255,255,0.5)",
+                                : "rgba(255,255,255,0.55)",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -2388,7 +2443,7 @@ export default function DashboardPage() {
                         </span>
                         <span
                           style={{
-                            fontSize: 10,
+                            fontSize: 11,
                             color: s.muted,
                             flexShrink: 0,
                           }}
@@ -2397,29 +2452,29 @@ export default function DashboardPage() {
                         </span>
                         <span
                           style={{
-                            fontSize: 10,
+                            fontSize: 11,
                             color: s.muted,
-                            width: 50,
+                            width: 54,
                             textAlign: "right",
                             flexShrink: 0,
                           }}
                         >
                           {f.type === "file" ? fmt(f.size) : ""}
                         </span>
-                        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
                           {f.viewable && (
                             <button
                               onClick={() =>
                                 viewFile(`${filePath}/${f.name}`, f.name)
                               }
                               style={{
-                                padding: "2px 7px",
+                                padding: "3px 9px",
                                 background: "transparent",
-                                border: "0.5px solid rgba(56,189,248,0.2)",
-                                borderRadius: 4,
+                                border: "0.5px solid rgba(56,189,248,0.25)",
+                                borderRadius: 5,
                                 color: s.cyan,
                                 fontFamily: s.mono,
-                                fontSize: 9,
+                                fontSize: 10,
                                 cursor: "pointer",
                               }}
                             >
@@ -2432,13 +2487,13 @@ export default function DashboardPage() {
                                 downloadFile(`${filePath}/${f.name}`)
                               }
                               style={{
-                                padding: "2px 7px",
+                                padding: "3px 9px",
                                 background: "transparent",
-                                border: "0.5px solid rgba(148,120,255,0.2)",
-                                borderRadius: 4,
+                                border: "0.5px solid rgba(148,120,255,0.22)",
+                                borderRadius: 5,
                                 color: s.purple,
                                 fontFamily: s.mono,
-                                fontSize: 9,
+                                fontSize: 10,
                                 cursor: "pointer",
                               }}
                             >
@@ -2451,13 +2506,13 @@ export default function DashboardPage() {
                                 downloadZip(`${filePath}/${f.name}`)
                               }
                               style={{
-                                padding: "2px 7px",
+                                padding: "3px 9px",
                                 background: "transparent",
-                                border: "0.5px solid rgba(148,120,255,0.2)",
-                                borderRadius: 4,
+                                border: "0.5px solid rgba(148,120,255,0.22)",
+                                borderRadius: 5,
                                 color: s.purple,
                                 fontFamily: s.mono,
-                                fontSize: 9,
+                                fontSize: 10,
                                 cursor: "pointer",
                               }}
                             >
@@ -2478,13 +2533,13 @@ export default function DashboardPage() {
                               }
                             }}
                             style={{
-                              padding: "2px 7px",
+                              padding: "3px 9px",
                               background: "transparent",
-                              border: "0.5px solid rgba(248,113,113,0.18)",
-                              borderRadius: 4,
+                              border: "0.5px solid rgba(248,113,113,0.2)",
+                              borderRadius: 5,
                               color: s.red,
                               fontFamily: s.mono,
-                              fontSize: 9,
+                              fontSize: 10,
                               cursor: "pointer",
                             }}
                           >
