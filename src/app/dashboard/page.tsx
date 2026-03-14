@@ -238,6 +238,154 @@ function StatusDot({ status }: { status: string }) {
   );
 }
 
+// ─── Styles type (shared between components) ─────────────────────────────────
+type S = {
+  bg: string;
+  surface: string;
+  border: string;
+  purple: string;
+  cyan: string;
+  green: string;
+  red: string;
+  amber: string;
+  text: string;
+  muted: string;
+  mono: string;
+};
+
+// ─── File Editor component ────────────────────────────────────────────────────
+function FileEditor({
+  fileContent,
+  filePath,
+  authFetch,
+  onClose,
+  downloadFile,
+  s,
+}: {
+  fileContent: { name: string; content: string };
+  filePath: string;
+  authFetch: (url: string, opts?: RequestInit) => Promise<Response | null>;
+  onClose: () => void;
+  downloadFile: (path: string) => void;
+  s: S;
+}) {
+  const [editContent, setEditContent] = useState(fileContent.content);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const isDirty = editContent !== fileContent.content;
+  const fullPath = `${filePath}/${fileContent.name}`;
+
+  const handleSave = async () => {
+    setSaving(true);
+    const res = await authFetch("/api/files", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: fullPath, content: editContent }),
+    });
+    setSaving(false);
+    if (res?.ok) setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const btnBase: React.CSSProperties = {
+    padding: "4px 10px",
+    background: "transparent",
+    border: `1px solid ${s.border}`,
+    borderRadius: 4,
+    fontFamily: s.mono,
+    fontSize: 9,
+    cursor: "pointer",
+  };
+
+  return (
+    <div
+      style={{
+        background: s.surface,
+        border: `1px solid ${s.border}`,
+        borderRadius: 12,
+        padding: "14px 16px",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      {/* Header: filename | Save | Download | Close */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 10,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            color: s.cyan,
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {fileContent.name}
+          {isDirty && (
+            <span style={{ color: s.amber, marginLeft: 6, fontSize: 9 }}>
+              ● unsaved
+            </span>
+          )}
+        </span>
+        {/* Save — dimmed until dirty */}
+        <button
+          onClick={handleSave}
+          disabled={!isDirty || saving}
+          style={{
+            ...btnBase,
+            color: isDirty ? s.green : s.muted,
+            borderColor: isDirty ? "rgba(74,222,128,0.3)" : s.border,
+            opacity: isDirty ? 1 : 0.4,
+            cursor: isDirty ? "pointer" : "default",
+          }}
+        >
+          {saving ? "Saving..." : saved ? "Saved ✓" : "Save"}
+        </button>
+        {/* Download */}
+        <button
+          onClick={() => downloadFile(fullPath)}
+          style={{ ...btnBase, color: s.purple }}
+        >
+          ↓ Download
+        </button>
+        {/* Close */}
+        <button onClick={onClose} style={{ ...btnBase, color: s.muted }}>
+          ✕
+        </button>
+      </div>
+
+      {/* Editable textarea */}
+      <textarea
+        value={editContent}
+        onChange={(e) => setEditContent(e.target.value)}
+        spellCheck={false}
+        style={{
+          flex: 1,
+          resize: "none",
+          background: "rgba(0,0,0,0.25)",
+          border: `1px solid ${isDirty ? "rgba(168,85,247,0.3)" : "rgba(255,255,255,0.06)"}`,
+          borderRadius: 6,
+          padding: 12,
+          color: s.text,
+          fontFamily: s.mono,
+          fontSize: 11,
+          lineHeight: 1.7,
+          outline: "none",
+          transition: "border-color 0.2s",
+        }}
+      />
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const [tab, setTab] = useState<
@@ -406,7 +554,7 @@ export default function DashboardPage() {
   // Fetch data when switching tabs
   useEffect(() => {
     if (tab === "docker") fetchDocker();
-    if (tab === "pm2") fetchPm2();
+    if (tab === "pm2" || tab === "home") fetchPm2();
     if (tab === "files") fetchFiles(filePath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -820,9 +968,9 @@ export default function DashboardPage() {
                     marginBottom: 12,
                   }}
                 >
-                  CONTAINERS
+                  PM2 PROCESSES
                 </div>
-                {containers.length === 0 ? (
+                {pm2List.length === 0 ? (
                   <div
                     style={{
                       fontSize: 11,
@@ -831,21 +979,22 @@ export default function DashboardPage() {
                       padding: "16px 0",
                     }}
                   >
-                    No containers
+                    No processes
                   </div>
                 ) : (
-                  containers.slice(0, 4).map((c) => (
+                  pm2List.slice(0, 5).map((p) => (
                     <div
-                      key={c.Id}
+                      key={p.id}
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 6,
-                        padding: "4px 0",
+                        gap: 8,
+                        padding: "5px 0",
+                        borderBottom: `1px solid rgba(255,255,255,0.04)`,
                         fontSize: 11,
                       }}
                     >
-                      <StatusDot status={c.State} />
+                      <StatusDot status={p.status} />
                       <span
                         style={{
                           flex: 1,
@@ -854,7 +1003,23 @@ export default function DashboardPage() {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {c.Names[0]?.replace("/", "")}
+                        {p.name}
+                      </span>
+                      <span
+                        style={{ fontSize: 9, color: s.muted, flexShrink: 0 }}
+                      >
+                        {p.cpu}%
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          color: s.muted,
+                          flexShrink: 0,
+                          width: 48,
+                          textAlign: "right",
+                        }}
+                      >
+                        {fmt(p.memory)}
                       </span>
                     </div>
                   ))
@@ -1568,6 +1733,7 @@ export default function DashboardPage() {
                 height: "calc(100vh - 120px)",
               }}
             >
+              {/* Left panel — file browser */}
               <div
                 style={{
                   ...card(),
@@ -1576,12 +1742,14 @@ export default function DashboardPage() {
                   overflow: "hidden",
                 }}
               >
+                {/* Breadcrumb + actions */}
                 <div
                   style={{
                     display: "flex",
                     gap: 6,
                     marginBottom: 10,
                     flexWrap: "wrap",
+                    alignItems: "center",
                   }}
                 >
                   {filePath
@@ -1616,23 +1784,60 @@ export default function DashboardPage() {
                         </span>
                       );
                     })}
-                  <button
-                    onClick={() => downloadZip(filePath)}
-                    style={{
-                      marginLeft: "auto",
-                      padding: "2px 8px",
-                      background: "transparent",
-                      border: `1px solid ${s.border}`,
-                      borderRadius: 4,
-                      color: s.muted,
-                      fontFamily: s.mono,
-                      fontSize: 9,
-                      cursor: "pointer",
-                    }}
-                  >
-                    ↓ zip folder
-                  </button>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    {/* Upload button */}
+                    <label
+                      style={{
+                        padding: "2px 8px",
+                        background: "rgba(168,85,247,0.1)",
+                        border: `1px solid rgba(168,85,247,0.25)`,
+                        borderRadius: 4,
+                        color: s.purple,
+                        fontFamily: s.mono,
+                        fontSize: 9,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ↑ Upload
+                      <input
+                        type="file"
+                        style={{ display: "none" }}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const form = new FormData();
+                          form.append("file", file);
+                          form.append("path", filePath);
+                          const res = await authFetch("/api/files", {
+                            method: "POST",
+                            body: form,
+                          });
+                          if (res?.ok) {
+                            fetchFiles(filePath);
+                          }
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button
+                      onClick={() => downloadZip(filePath)}
+                      style={{
+                        padding: "2px 8px",
+                        background: "transparent",
+                        border: `1px solid ${s.border}`,
+                        borderRadius: 4,
+                        color: s.muted,
+                        fontFamily: s.mono,
+                        fontSize: 9,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ↓ zip
+                    </button>
+                  </div>
                 </div>
+
+                {/* File list */}
                 <div style={{ flex: 1, overflow: "auto" }}>
                   {loading ? (
                     <div
@@ -1655,7 +1860,6 @@ export default function DashboardPage() {
                           padding: "7px 4px",
                           borderBottom: `1px solid rgba(255,255,255,0.04)`,
                           fontSize: 11,
-                          cursor: "pointer",
                         }}
                         onMouseEnter={(e) =>
                           (e.currentTarget.style.background =
@@ -1681,6 +1885,7 @@ export default function DashboardPage() {
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
+                            cursor: "pointer",
                           }}
                           onClick={() =>
                             f.type === "dir"
@@ -1772,61 +1977,17 @@ export default function DashboardPage() {
                   )}
                 </div>
               </div>
+
+              {/* Right panel — file viewer + editor */}
               {fileContent && (
-                <div
-                  style={{
-                    ...card(),
-                    display: "flex",
-                    flexDirection: "column",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 10,
-                    }}
-                  >
-                    <span style={{ fontSize: 11, color: s.cyan }}>
-                      {fileContent.name}
-                    </span>
-                    <button
-                      onClick={() => setFileContent(null)}
-                      style={{
-                        padding: "3px 8px",
-                        background: "transparent",
-                        border: `1px solid ${s.border}`,
-                        borderRadius: 4,
-                        color: s.muted,
-                        fontFamily: s.mono,
-                        fontSize: 9,
-                        cursor: "pointer",
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  <pre
-                    style={{
-                      flex: 1,
-                      overflow: "auto",
-                      margin: 0,
-                      fontSize: 11,
-                      lineHeight: 1.7,
-                      color: s.text,
-                      fontFamily: s.mono,
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      background: "rgba(0,0,0,0.25)",
-                      borderRadius: 6,
-                      padding: 12,
-                    }}
-                  >
-                    {fileContent.content}
-                  </pre>
-                </div>
+                <FileEditor
+                  fileContent={fileContent}
+                  filePath={filePath}
+                  authFetch={authFetch}
+                  onClose={() => setFileContent(null)}
+                  downloadFile={downloadFile}
+                  s={s}
+                />
               )}
             </div>
           )}

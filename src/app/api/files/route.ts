@@ -33,24 +33,10 @@ function safePath(p: string): string {
   const user = process.env.VPS_USER;
   const base = user === "root" ? "/root" : `/home/${user}`;
   const resolved = p.startsWith("/") ? p : `${base}/${p}`;
-  // Prevent path traversal
   if (!resolved.startsWith("/")) return base;
   return resolved;
 }
 
-function exec(ssh: Client, cmd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    ssh.exec(cmd, (err, stream) => {
-      if (err) return reject(err);
-      let out = "";
-      stream.on("data", (d: Buffer) => (out += d.toString()));
-      stream.stderr.on("data", () => {});
-      stream.on("close", () => resolve(out));
-    });
-  });
-}
-
-// Text file extensions that can be viewed inline
 const TEXT_EXTENSIONS = new Set([
   "txt",
   "md",
@@ -87,14 +73,12 @@ const TEXT_EXTENSIONS = new Set([
   "makefile",
   "nginx",
   "service",
-  "timer",
 ]);
 
 function isTextFile(filename: string): boolean {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
   if (TEXT_EXTENSIONS.has(ext)) return true;
-  // Files without extension that are commonly text
-  const noExtFiles = [
+  return [
     "dockerfile",
     "makefile",
     "rakefile",
@@ -102,28 +86,22 @@ function isTextFile(filename: string): boolean {
     "readme",
     "license",
     "changelog",
-  ];
-  return noExtFiles.includes(filename.toLowerCase());
+  ].includes(filename.toLowerCase());
 }
 
-// GET /api/files?path=/root — list directory
-// GET /api/files?path=/root/file.ts&view=1 — view text file inline
-// GET /api/files?path=/root/file.ts&download=1 — download file
-// GET /api/files?path=/root/folder&zip=1 — download folder as zip
 export async function GET(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
-  const rawPath = url.searchParams.get("path") || "";
-  const path = safePath(rawPath);
+  const path = safePath(url.searchParams.get("path") || "");
   const download = url.searchParams.get("download") === "1";
   const view = url.searchParams.get("view") === "1";
   const zip = url.searchParams.get("zip") === "1";
 
   const ssh = await getSSHClient();
 
-  // Zip folder download
+  // Download folder as zip
   if (zip) {
     return new Promise<NextResponse>((resolve) => {
       ssh.exec(
@@ -139,11 +117,10 @@ export async function GET(request: NextRequest) {
           stream.on("data", (d: Buffer) => chunks.push(d));
           stream.on("close", () => {
             ssh.end();
-            const folderName = path.split("/").pop() || "folder";
             resolve(
               new NextResponse(Buffer.concat(chunks), {
                 headers: {
-                  "Content-Disposition": `attachment; filename="${folderName}.zip"`,
+                  "Content-Disposition": `attachment; filename="${path.split("/").pop()}.zip"`,
                   "Content-Type": "application/zip",
                 },
               }),
@@ -177,9 +154,7 @@ export async function GET(request: NextRequest) {
           ssh.end();
           const filename = path.split("/").pop() || "file";
           const content = Buffer.concat(chunks);
-
           if (view) {
-            // Return text content for inline viewing
             resolve(
               new NextResponse(content, {
                 headers: {
@@ -204,14 +179,12 @@ export async function GET(request: NextRequest) {
           resolve(NextResponse.json({ error: "Read failed" }, { status: 500 }));
         });
       } else {
-        // List directory
         sftp.readdir(path, (err, list) => {
           ssh.end();
           if (err)
             return resolve(
               NextResponse.json({ error: "readdir failed" }, { status: 500 }),
             );
-
           const files = list
             .map((f) => ({
               name: f.filename,
@@ -223,11 +196,9 @@ export async function GET(request: NextRequest) {
               viewable: !f.attrs.isDirectory() && isTextFile(f.filename),
             }))
             .sort((a, b) => {
-              // Dirs first, then files
               if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
               return a.name.localeCompare(b.name);
             });
-
           resolve(NextResponse.json({ files, path }));
         });
       }
@@ -235,7 +206,6 @@ export async function GET(request: NextRequest) {
   });
 }
 
-// POST /api/files — upload file
 export async function POST(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -246,8 +216,6 @@ export async function POST(request: NextRequest) {
   if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const fullPath = `${destPath}/${file.name}`;
-
   const ssh = await getSSHClient();
   return new Promise<NextResponse>((resolve) => {
     ssh.sftp((err, sftp) => {
@@ -257,7 +225,7 @@ export async function POST(request: NextRequest) {
           NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
         );
       }
-      const writeStream = sftp.createWriteStream(fullPath);
+      const writeStream = sftp.createWriteStream(`${destPath}/${file.name}`);
       writeStream.on("close", () => {
         ssh.end();
         resolve(NextResponse.json({ success: true }));
@@ -267,6 +235,43 @@ export async function POST(request: NextRequest) {
         resolve(NextResponse.json({ error: "Write failed" }, { status: 500 }));
       });
       writeStream.end(buffer);
+    });
+  });
+}
+
+// Write file content — called when user saves edits from the web editor
+export async function PUT(request: NextRequest) {
+  if (!authCheck(request))
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { path, content } = await request.json();
+  if (!path || content === undefined)
+    return NextResponse.json(
+      { error: "Missing path or content" },
+      { status: 400 },
+    );
+
+  const destPath = safePath(path);
+  const ssh = await getSSHClient();
+
+  return new Promise<NextResponse>((resolve) => {
+    ssh.sftp((err, sftp) => {
+      if (err) {
+        ssh.end();
+        return resolve(
+          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
+        );
+      }
+      const writeStream = sftp.createWriteStream(destPath);
+      writeStream.on("close", () => {
+        ssh.end();
+        resolve(NextResponse.json({ success: true }));
+      });
+      writeStream.on("error", () => {
+        ssh.end();
+        resolve(NextResponse.json({ error: "Write failed" }, { status: 500 }));
+      });
+      writeStream.end(Buffer.from(content, "utf8"));
     });
   });
 }
