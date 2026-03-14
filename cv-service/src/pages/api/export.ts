@@ -21,15 +21,21 @@ function getChromiumPath(): string {
   );
 }
 
-async function mdToPdf(md: string, lang: string): Promise<ArrayBuffer> {
-  // Dynamic import — puppeteer-core is heavy
+async function mdToPdf(
+  md: string,
+  lang: string,
+  cssOverride?: string,
+): Promise<ArrayBuffer> {
   const puppeteer = await import("puppeteer-core");
 
-  let css = "";
-  try {
-    const cssPath = join(process.cwd(), "public", "resumes", "styles.css");
-    css = readFileSync(cssPath, "utf8");
-  } catch {}
+  // Use CSS override from editor, or load saved styles.css
+  let css = cssOverride ?? "";
+  if (!css) {
+    try {
+      const cssPath = join(process.cwd(), "public", "resumes", "styles.css");
+      css = readFileSync(cssPath, "utf8");
+    } catch {}
+  }
 
   // Embed font as base64 so Puppeteer can load it without a file server
   let fontBase64 = "";
@@ -141,10 +147,10 @@ export const GET: APIRoute = async ({ url }) => {
   }
 };
 
-// POST /api/export — body: { lang, md }
-// Export PDF from custom markdown (live editor export)
+// POST /api/export — body: { lang, md, css? }
+// Export PDF from custom markdown + optional CSS override
 export const POST: APIRoute = async ({ request }) => {
-  const { lang = "vi", md } = await request.json();
+  const { lang = "vi", md, css: cssOverride } = await request.json();
 
   if (!["vi", "en"].includes(lang)) {
     return new Response("Invalid lang", { status: 400 });
@@ -152,7 +158,7 @@ export const POST: APIRoute = async ({ request }) => {
   if (!md) return new Response("Missing md content", { status: 400 });
 
   try {
-    const pdfBuffer = await mdToPdf(md, lang);
+    const pdfBuffer = await mdToPdf(md, lang, cssOverride);
     const filename =
       lang === "vi" ? "CV_PhucThai_VI.pdf" : "CV_PhucThai_EN.pdf";
 

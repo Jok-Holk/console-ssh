@@ -802,15 +802,17 @@ function CvEditor({
 }) {
   const [lang, setLang] = useState<"vi" | "en">("vi");
   const [md, setMd] = useState("");
-  const [previewHtml, setPreviewHtml] = useState("");
+  const [css, setCss] = useState("");
+  const [activePanel, setActivePanel] = useState<"md" | "css">("md");
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [savingMd, setSavingMd] = useState(false);
+  const [savingCss, setSavingCss] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const previewRef = useRef<HTMLIFrameElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load MD file when lang changes
+  // Load MD when lang changes
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -823,7 +825,18 @@ function CvEditor({
     })();
   }, [lang, authFetch]);
 
-  // Debounced live preview — POST markdown to render API
+  // Load CSS once on mount
+  useEffect(() => {
+    (async () => {
+      const res = await authFetch("/api/cv/css");
+      if (res?.ok) {
+        const { content } = await res.json();
+        setCss(content);
+      }
+    })();
+  }, [authFetch]);
+
+  // Debounced live preview — re-render when MD or CSS changes
   useEffect(() => {
     if (!md) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -831,31 +844,37 @@ function CvEditor({
       const res = await fetch("/api/cv/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lang, md }),
+        body: JSON.stringify({ lang, md, css }),
       });
-      if (res.ok) setPreviewHtml(await res.text());
+      if (res.ok && previewRef.current)
+        previewRef.current.srcdoc = await res.text();
     }, 500);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [md, lang]);
+  }, [md, css, lang]);
 
-  // Write preview HTML into iframe srcdoc
-  useEffect(() => {
-    if (previewRef.current && previewHtml) {
-      previewRef.current.srcdoc = previewHtml;
-    }
-  }, [previewHtml]);
-
-  const handleSave = async () => {
-    setSaving(true);
+  const handleSaveMd = async () => {
+    setSavingMd(true);
     const res = await authFetch("/api/cv/md", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lang, content: md }),
     });
-    setSaving(false);
-    setSaveMsg(res?.ok ? "Saved ✓" : "Save failed");
+    setSavingMd(false);
+    setSaveMsg(res?.ok ? "MD saved ✓" : "Save failed");
+    setTimeout(() => setSaveMsg(null), 2500);
+  };
+
+  const handleSaveCss = async () => {
+    setSavingCss(true);
+    const res = await authFetch("/api/cv/css", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: css }),
+    });
+    setSavingCss(false);
+    setSaveMsg(res?.ok ? "CSS saved ✓" : "Save failed");
     setTimeout(() => setSaveMsg(null), 2500);
   };
 
@@ -865,7 +884,7 @@ function CvEditor({
       const res = await fetch("/api/cv/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lang, md }),
+        body: JSON.stringify({ lang, md, css }),
       });
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
@@ -894,7 +913,7 @@ function CvEditor({
     fontFamily: s.mono,
     fontSize: 12,
     cursor: "pointer",
-    transition: "opacity 0.15s",
+    whiteSpace: "nowrap" as const,
   });
 
   return (
@@ -903,7 +922,7 @@ function CvEditor({
         display: "flex",
         flexDirection: "column",
         height: "calc(100vh - 120px)",
-        gap: 14,
+        gap: 12,
       }}
     >
       {/* Toolbar */}
@@ -915,11 +934,10 @@ function CvEditor({
           flexWrap: "wrap",
         }}
       >
-        {/* Lang selector */}
+        {/* Lang */}
         <div
           style={{
             display: "flex",
-            gap: 0,
             border: `0.5px solid ${s.border}`,
             borderRadius: 8,
             overflow: "hidden",
@@ -944,6 +962,35 @@ function CvEditor({
           ))}
         </div>
 
+        {/* Panel toggle */}
+        <div
+          style={{
+            display: "flex",
+            border: `0.5px solid ${s.border}`,
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          {(["md", "css"] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setActivePanel(p)}
+              style={{
+                padding: "7px 16px",
+                background:
+                  activePanel === p ? "rgba(128,96,208,0.2)" : "transparent",
+                border: "none",
+                color: activePanel === p ? s.purple : s.muted,
+                fontFamily: s.mono,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {p === "md" ? "Markdown" : "CSS"}
+            </button>
+          ))}
+        </div>
+
         <div style={{ flex: 1 }} />
 
         {saveMsg && (
@@ -956,16 +1003,34 @@ function CvEditor({
             {saveMsg}
           </span>
         )}
-        <button
-          onClick={handleSave}
-          disabled={saving || loading}
-          style={{
-            ...btn(s.green, "rgba(74,222,128,0.3)"),
-            opacity: saving ? 0.5 : 1,
-          }}
-        >
-          {saving ? "Saving..." : "Save MD"}
-        </button>
+        {loading && (
+          <span style={{ fontSize: 12, color: s.amber }}>Loading...</span>
+        )}
+
+        {activePanel === "md" ? (
+          <button
+            onClick={handleSaveMd}
+            disabled={savingMd || loading}
+            style={{
+              ...btn(s.green, "rgba(74,222,128,0.3)"),
+              opacity: savingMd ? 0.5 : 1,
+            }}
+          >
+            {savingMd ? "Saving..." : "Save MD"}
+          </button>
+        ) : (
+          <button
+            onClick={handleSaveCss}
+            disabled={savingCss}
+            style={{
+              ...btn(s.cyan, "rgba(56,189,248,0.3)"),
+              opacity: savingCss ? 0.5 : 1,
+            }}
+          >
+            {savingCss ? "Saving..." : "Save CSS"}
+          </button>
+        )}
+
         <button
           onClick={handleExport}
           disabled={exporting || loading}
@@ -974,33 +1039,30 @@ function CvEditor({
             opacity: exporting ? 0.5 : 1,
           }}
         >
-          {exporting ? "Generating PDF..." : "⬇ Export PDF"}
+          {exporting ? "Generating..." : "⬇ Export PDF"}
         </button>
+
         <a
           href={`/api/cv/export?lang=${lang}`}
           target="_blank"
           rel="noopener noreferrer"
-          style={{
-            ...btn(s.muted, s.border),
-            textDecoration: "none",
-            display: "inline-block",
-          }}
+          style={{ ...btn(s.muted, s.border), textDecoration: "none" }}
         >
-          ↗ Public link
+          ↗ Public
         </a>
       </div>
 
-      {/* Editor + Preview split */}
+      {/* Editor + Preview */}
       <div
         style={{
           flex: 1,
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: 14,
+          gap: 12,
           minHeight: 0,
         }}
       >
-        {/* Markdown editor */}
+        {/* Left: MD or CSS editor */}
         <div
           style={{
             background: s.surface,
@@ -1018,25 +1080,28 @@ function CvEditor({
               fontSize: 11,
               color: s.muted,
               letterSpacing: "0.1em",
-              display: "flex",
-              justifyContent: "space-between",
             }}
           >
-            <span>MARKDOWN — resume-{lang}.md</span>
-            {loading && <span style={{ color: s.amber }}>Loading...</span>}
+            {activePanel === "md"
+              ? `MARKDOWN — resume-${lang}.md`
+              : "CSS — styles.css"}
           </div>
           <textarea
-            value={md}
-            onChange={(e) => setMd(e.target.value)}
+            value={activePanel === "md" ? md : css}
+            onChange={(e) =>
+              activePanel === "md"
+                ? setMd(e.target.value)
+                : setCss(e.target.value)
+            }
             spellCheck={false}
-            placeholder="Loading..."
+            placeholder={activePanel === "md" ? "Loading..." : "Loading CSS..."}
             style={{
               flex: 1,
               resize: "none",
               background: "transparent",
               border: "none",
               padding: "14px 16px",
-              color: s.text,
+              color: activePanel === "css" ? s.cyan : s.text,
               fontFamily: s.mono,
               fontSize: 12,
               lineHeight: 1.75,
@@ -1045,7 +1110,7 @@ function CvEditor({
           />
         </div>
 
-        {/* HTML Preview */}
+        {/* Right: Preview */}
         <div
           style={{
             background: "#fff",
@@ -1064,9 +1129,14 @@ function CvEditor({
               color: "#888",
               letterSpacing: "0.1em",
               background: "#fafafa",
+              display: "flex",
+              justifyContent: "space-between",
             }}
           >
-            PREVIEW — A4
+            <span>PREVIEW — A4</span>
+            <span style={{ fontSize: 10, color: "#bbb" }}>
+              live · 500ms debounce
+            </span>
           </div>
           <iframe
             ref={previewRef}
@@ -1077,30 +1147,29 @@ function CvEditor({
         </div>
       </div>
 
-      {/* Info footer */}
-      <div style={{ fontSize: 11, color: s.muted, padding: "6px 0" }}>
-        Portfolio download link:
+      {/* Footer links */}
+      <div style={{ fontSize: 11, color: s.muted }}>
+        Download link:
         <code
           style={{
-            marginLeft: 8,
+            margin: "0 8px",
             color: s.cyan,
             background: "rgba(0,0,0,0.2)",
             padding: "2px 8px",
             borderRadius: 5,
           }}
         >
-          https://console.jokholk.dev/api/cv/export?lang=vi
+          /api/cv/export?lang=vi
         </code>
         <code
           style={{
-            marginLeft: 8,
             color: s.cyan,
             background: "rgba(0,0,0,0.2)",
             padding: "2px 8px",
             borderRadius: 5,
           }}
         >
-          https://console.jokholk.dev/api/cv/export?lang=en
+          /api/cv/export?lang=en
         </code>
       </div>
     </div>

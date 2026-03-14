@@ -80,17 +80,18 @@ export const GET: APIRoute = async ({ url }) => {
   });
 };
 
-// POST /api/render — body: { lang, md }
-// Live preview from editor
+// POST /api/render — body: { lang, md, css? }
+// Live preview from editor — css override replaces styles.css
 export const POST: APIRoute = async ({ request }) => {
-  const { lang = "vi", md } = await request.json();
+  const { lang = "vi", md, css: cssOverride } = await request.json();
 
   if (!["vi", "en"].includes(lang)) {
     return new Response("Invalid lang", { status: 400 });
   }
   if (!md) return new Response("Missing md", { status: 400 });
 
-  const css = loadCss();
+  // Use provided CSS override, or fall back to saved styles.css
+  const css = cssOverride !== undefined ? cssOverride : loadCss();
   const body = await marked.parse(md);
   const html = buildHtml(lang, body, css, `CV — ${lang.toUpperCase()}`);
 
