@@ -42,3 +42,11 @@ next-env.d.ts
 
 # local key storage
 keys/*
+
+# cv-service
+cv-service/node_modules
+cv-service/dist
+cv-service/.astro
+
+# resume PDFs 
+cv-service/public/resumes/**/*.pdf
