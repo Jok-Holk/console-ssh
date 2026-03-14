@@ -796,34 +796,37 @@ function DeployPanel({
 // Settings tab component — embedded in dashboard_page.tsx
 // Paste this before the Main component
 
+// Settings tab component — embedded in dashboard_page.tsx
+// Paste this before the Main component
+
 // ─── Module config definitions ───────────────────────────────────────────────
 const MODULE_DEFS = [
   {
     id: "metrics",
     label: "Monitor",
     icon: "◈",
-    envKey: "ENABLE_METRICS",
+    envKey: "NEXT_PUBLIC_ENABLE_METRICS",
     fields: [] as Field[],
   },
   {
     id: "docker",
     label: "Docker",
     icon: "▣",
-    envKey: "ENABLE_DOCKER",
+    envKey: "NEXT_PUBLIC_ENABLE_DOCKER",
     fields: [] as Field[],
   },
   {
     id: "pm2",
     label: "PM2",
     icon: "⟳",
-    envKey: "ENABLE_PM2",
+    envKey: "NEXT_PUBLIC_ENABLE_PM2",
     fields: [] as Field[],
   },
   {
     id: "files",
     label: "Files",
     icon: "⊟",
-    envKey: "ENABLE_FILES",
+    envKey: "NEXT_PUBLIC_ENABLE_FILES",
     fields: [] as Field[],
   },
   {
