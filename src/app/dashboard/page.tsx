@@ -946,8 +946,23 @@ function SettingsTab({
     if (res?.ok) {
       const data = await res.json();
       if (data.rebuilding) {
-        setSaveMsg("Saved ✓ — building... (~30s)");
-        setTimeout(() => (window.location.href = "/dashboard"), 35000);
+        setSaveMsg("Saved ✓ — building (~30s), will auto-reload...");
+        // Poll until server is back after rebuild
+        let attempts = 0;
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const r = await fetch("/api/auth/token", { cache: "no-store" });
+            if (r.ok || r.status === 401) {
+              clearInterval(poll);
+              window.location.href = "/dashboard";
+            }
+          } catch {}
+          if (attempts > 60) {
+            clearInterval(poll);
+            setSaveMsg("Reload manually after build completes.");
+          }
+        }, 2000);
       } else {
         setSaveMsg("Saved ✓ — restarting...");
         setTimeout(() => (window.location.href = "/dashboard"), 4000);
@@ -1115,8 +1130,8 @@ function SettingsTab({
                   </span>
                   <span style={{ flex: 1, fontSize: 13, color: s.text }}>
                     {mod.label}
-                    {hkey && healthDot(hkey)}
-                    {hkey && health?.[hkey] && !health[hkey].ok && (
+                    {on && hkey && healthDot(hkey)}
+                    {on && hkey && health?.[hkey] && !health[hkey].ok && (
                       <span
                         style={{ marginLeft: 8, fontSize: 10, color: s.red }}
                       >
