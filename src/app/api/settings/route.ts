@@ -79,12 +79,18 @@ function serializeEnv(
   return updated.join("\n");
 }
 
-// Health check each module
+// Health check each module — reads .env file directly to get latest values
 async function healthCheck() {
   const checks: Record<string, { ok: boolean; reason?: string }> = {};
 
+  // Read latest .env values (not process.env which may be stale)
+  const liveEnv = existsSync(ENV_PATH)
+    ? parseEnv(readFileSync(ENV_PATH, "utf8"))
+    : {};
+  const getEnv = (key: string) => liveEnv[key] ?? process.env[key] ?? "";
+
   // SSH — check key file exists
-  const keyPath = process.env.VPS_PRIVATE_KEY_PATH;
+  const keyPath = getEnv("VPS_PRIVATE_KEY_PATH");
   checks.ssh =
     keyPath && existsSync(keyPath)
       ? { ok: true }
@@ -98,7 +104,7 @@ async function healthCheck() {
   // Redis
   try {
     const Redis = (await import("ioredis")).default;
-    const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6380", {
+    const redis = new Redis(getEnv("REDIS_URL") || "redis://localhost:6380", {
       lazyConnect: true,
       connectTimeout: 2000,
     });
@@ -110,23 +116,24 @@ async function healthCheck() {
     checks.redis = { ok: false, reason: String(e) };
   }
 
-  // CV service
-  if (process.env.CV_SERVICE_URL) {
+  // CV service — use live env value
+  const cvUrl = getEnv("CV_SERVICE_URL");
+  if (cvUrl) {
     try {
-      const res = await fetch(`${process.env.CV_SERVICE_URL}/api/md?lang=vi`, {
+      const res = await fetch(`${cvUrl}/api/md?lang=vi`, {
         signal: AbortSignal.timeout(3000),
       });
       checks.cv = res.ok
         ? { ok: true }
         : { ok: false, reason: `HTTP ${res.status}` };
-    } catch (e) {
+    } catch {
       checks.cv = { ok: false, reason: "Service unreachable" };
     }
   } else {
     checks.cv = { ok: false, reason: "CV_SERVICE_URL not set" };
   }
 
-  // Docker — just check if docker binary exists
+  // Docker
   try {
     execSync("docker version --format '{{.Server.Version}}'", {
       timeout: 3000,
@@ -163,14 +170,15 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ env: safe, health });
 }
 
-// POST /api/settings — update .env keys + optionally restart pm2
+// POST /api/settings — update .env keys + optionally restart/rebuild pm2
 export async function POST(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { updates, restart } = (await request.json()) as {
+  const { updates, restart, rebuild } = (await request.json()) as {
     updates: Record<string, string>;
-    restart?: string[]; // pm2 process names to restart
+    restart?: string[];
+    rebuild?: boolean;
   };
 
   if (!updates || typeof updates !== "object")
@@ -188,7 +196,32 @@ export async function POST(request: NextRequest) {
   const newContent = serializeEnv(original, updates);
   writeFileSync(ENV_PATH, newContent, "utf8");
 
-  // Restart specified pm2 processes
+  // Check if any NEXT_PUBLIC vars changed — they need a full rebuild
+  const hasPublicChanges = Object.keys(updates).some((k) =>
+    k.startsWith("NEXT_PUBLIC_"),
+  );
+  const shouldRebuild = rebuild || hasPublicChanges;
+
+  if (shouldRebuild) {
+    // Run build + reload in background (detached so response can return)
+    const appDir = process.env.APP_DIR ?? "/root/console-ssh";
+    const pm2Name = process.env.PM2_APP_NAME ?? "console-ssh";
+    const { spawn } = await import("child_process");
+    spawn(
+      "sh",
+      [
+        "-c",
+        `cd ${appDir} && npm run build && pm2 reload ${pm2Name} --update-env`,
+      ],
+      {
+        detached: true,
+        stdio: "ignore",
+      },
+    ).unref();
+    return NextResponse.json({ success: true, rebuilding: true });
+  }
+
+  // Just restart — no NEXT_PUBLIC changes
   const restarted: string[] = [];
   if (restart?.length) {
     for (const name of restart) {
@@ -202,5 +235,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ success: true, restarted });
+  return NextResponse.json({ success: true, restarted, rebuilding: false });
 }

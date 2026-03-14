@@ -935,13 +935,23 @@ function SettingsTab({
     const res = await authFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ updates, restart: ["console-ssh"] }),
+      body: JSON.stringify({
+        updates,
+        restart: ["console-ssh"],
+        rebuild: true, // NEXT_PUBLIC vars need a full rebuild
+      }),
     });
 
     setSaving(false);
     if (res?.ok) {
-      setSaveMsg("Saved ✓ — restarting...");
-      setTimeout(() => (window.location.href = "/dashboard"), 4000);
+      const data = await res.json();
+      if (data.rebuilding) {
+        setSaveMsg("Saved ✓ — building... (~30s)");
+        setTimeout(() => (window.location.href = "/dashboard"), 35000);
+      } else {
+        setSaveMsg("Saved ✓ — restarting...");
+        setTimeout(() => (window.location.href = "/dashboard"), 4000);
+      }
     } else {
       setSaveMsg("Save failed");
     }
