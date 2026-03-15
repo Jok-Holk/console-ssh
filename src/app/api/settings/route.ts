@@ -79,72 +79,162 @@ function serializeEnv(
   return updated.join("\n");
 }
 
-// Health check each module — reads .env file directly to get latest values
+// Health check each module
 async function healthCheck() {
-  const checks: Record<string, { ok: boolean; reason?: string }> = {};
+  type HS = "ok" | "empty" | "not_running" | "not_installed" | "misconfigured";
+  type HR = { ok: boolean; status: HS; reason?: string };
+  const checks: Record<string, HR> = {};
 
-  // Read latest .env values (not process.env which may be stale)
   const liveEnv = existsSync(ENV_PATH)
     ? parseEnv(readFileSync(ENV_PATH, "utf8"))
     : {};
   const getEnv = (key: string) => liveEnv[key] ?? process.env[key] ?? "";
 
-  // SSH — check key file exists
+  // SSH
   const keyPath = getEnv("VPS_PRIVATE_KEY_PATH");
-  checks.ssh =
-    keyPath && existsSync(keyPath)
-      ? { ok: true }
-      : {
-          ok: false,
-          reason: keyPath
-            ? "Key file not found"
-            : "VPS_PRIVATE_KEY_PATH not set",
-        };
+  if (!keyPath)
+    checks.ssh = {
+      ok: false,
+      status: "misconfigured",
+      reason: "VPS_PRIVATE_KEY_PATH not set",
+    };
+  else if (!existsSync(keyPath))
+    checks.ssh = {
+      ok: false,
+      status: "misconfigured",
+      reason: `Key file not found: ${keyPath}`,
+    };
+  else checks.ssh = { ok: true, status: "ok" };
 
-  // Redis
-  try {
+  // Redis — always quit/disconnect to avoid leaks
+  {
     const Redis = (await import("ioredis")).default;
     const redis = new Redis(getEnv("REDIS_URL") || "redis://localhost:6380", {
       lazyConnect: true,
       connectTimeout: 2000,
+      maxRetriesPerRequest: 0,
+      enableOfflineQueue: false,
     });
-    await redis.connect();
-    await redis.ping();
-    await redis.quit();
-    checks.redis = { ok: true };
-  } catch (e) {
-    checks.redis = { ok: false, reason: String(e) };
+    try {
+      await redis.connect();
+      await redis.ping();
+      checks.redis = { ok: true, status: "ok" };
+    } catch (e) {
+      const msg = String(e);
+      checks.redis = {
+        ok: false,
+        status: msg.includes("ECONNREFUSED") ? "not_running" : "misconfigured",
+        reason: msg.includes("ECONNREFUSED") ? "Redis not running" : msg,
+      };
+    } finally {
+      try {
+        await redis.quit();
+      } catch {
+        redis.disconnect();
+      }
+    }
   }
 
-  // CV service — use live env value
+  // CV service
   const cvUrl = getEnv("CV_SERVICE_URL");
-  if (cvUrl) {
+  if (!cvUrl) {
+    checks.cv = {
+      ok: false,
+      status: "misconfigured",
+      reason: "CV_SERVICE_URL not set",
+    };
+  } else {
     try {
       const res = await fetch(`${cvUrl}/api/md?lang=vi`, {
         signal: AbortSignal.timeout(3000),
       });
       checks.cv = res.ok
-        ? { ok: true }
-        : { ok: false, reason: `HTTP ${res.status}` };
+        ? { ok: true, status: "ok" }
+        : { ok: false, status: "not_running", reason: `HTTP ${res.status}` };
     } catch {
-      checks.cv = { ok: false, reason: "Service unreachable" };
+      checks.cv = {
+        ok: false,
+        status: "not_running",
+        reason: "Service unreachable",
+      };
     }
-  } else {
-    checks.cv = { ok: false, reason: "CV_SERVICE_URL not set" };
   }
 
-  // Docker
-  try {
-    execSync("docker version --format '{{.Server.Version}}'", {
-      timeout: 3000,
-      stdio: "pipe",
-    });
-    checks.docker = { ok: true };
-  } catch {
+  // Docker: not_installed vs not_running vs empty vs ok
+  const hasDocker = (() => {
+    try {
+      execSync("which docker", { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  if (!hasDocker) {
     checks.docker = {
       ok: false,
-      reason: "Docker not installed or not running",
+      status: "not_installed",
+      reason: "Docker not installed",
     };
+  } else {
+    try {
+      execSync("docker version --format '{{.Server.Version}}'", {
+        timeout: 3000,
+        stdio: "pipe",
+      });
+      const ps = execSync("docker ps -q", {
+        timeout: 3000,
+        stdio: "pipe",
+        encoding: "utf8",
+      }).trim();
+      checks.docker = {
+        ok: true,
+        status: ps ? "ok" : "empty",
+        reason: ps ? undefined : "No running containers",
+      };
+    } catch {
+      checks.docker = {
+        ok: false,
+        status: "not_running",
+        reason: "Docker daemon not running",
+      };
+    }
+  }
+
+  // PM2: not_installed vs empty vs ok
+  const hasPm2 = (() => {
+    try {
+      execSync("which pm2", { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  if (!hasPm2) {
+    checks.pm2 = {
+      ok: false,
+      status: "not_installed",
+      reason: "PM2 not installed",
+    };
+  } else {
+    try {
+      const list = execSync("pm2 jlist", {
+        timeout: 3000,
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      const procs = JSON.parse(list) as unknown[];
+      checks.pm2 = {
+        ok: true,
+        status: procs.length > 0 ? "ok" : "empty",
+        reason: procs.length === 0 ? "No PM2 processes" : undefined,
+      };
+    } catch {
+      checks.pm2 = {
+        ok: false,
+        status: "not_running",
+        reason: "PM2 not responding",
+      };
+    }
   }
 
   return checks;
@@ -203,22 +293,33 @@ export async function POST(request: NextRequest) {
   const shouldRebuild = rebuild || hasPublicChanges;
 
   if (shouldRebuild) {
-    // Run build + reload in background (detached so response can return)
-    const appDir = process.env.APP_DIR ?? "/root/console-ssh";
-    const pm2Name = process.env.PM2_APP_NAME ?? "console-ssh";
+    const appDir = process.env.APP_DIR ?? process.cwd();
+    const pm2Name = process.env.PM2_APP_NAME ?? "app";
+    const logFile = join(appDir, ".rebuild.log");
     const { spawn } = await import("child_process");
+
+    // Write start marker — UI polls /api/auth/token until server back online
+    writeFileSync(
+      logFile,
+      `[${new Date().toISOString()}] BUILD STARTED\n`,
+      "utf8",
+    );
+
+    // Run build + reload, pipe output to log file
     spawn(
       "sh",
       [
         "-c",
-        `cd ${appDir} && npm run build && pm2 reload ${pm2Name} --update-env`,
+        `cd ${appDir} && npm run build >> .rebuild.log 2>&1 && echo "BUILD OK" >> .rebuild.log && pm2 reload ${pm2Name} --update-env >> .rebuild.log 2>&1 || echo "BUILD FAILED" >> .rebuild.log`,
       ],
-      {
-        detached: true,
-        stdio: "ignore",
-      },
+      { detached: true, stdio: "ignore" },
     ).unref();
-    return NextResponse.json({ success: true, rebuilding: true });
+
+    return NextResponse.json({
+      success: true,
+      rebuilding: true,
+      logFile: ".rebuild.log",
+    });
   }
 
   // Just restart — no NEXT_PUBLIC changes
@@ -236,4 +337,20 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({ success: true, restarted, rebuilding: false });
+}
+
+// GET /api/settings/rebuild-status — read last rebuild log
+export async function GET_REBUILD(request: NextRequest) {
+  if (!authCheck(request))
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const appDir = process.env.APP_DIR ?? process.cwd();
+  const logFile = join(appDir, ".rebuild.log");
+  if (!existsSync(logFile)) return NextResponse.json({ status: "none" });
+  const log = readFileSync(logFile, "utf8");
+  const failed = log.includes("BUILD FAILED");
+  const ok = log.includes("BUILD OK");
+  return NextResponse.json({
+    status: ok ? "ok" : failed ? "failed" : "running",
+    log: log.slice(-3000),
+  });
 }

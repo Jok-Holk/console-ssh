@@ -48,5 +48,16 @@ cv-service/node_modules
 cv-service/dist
 cv-service/.astro
 
-# resume PDFs 
+# cv-service build output
+cv-service/node_modules
+cv-service/dist
+cv-service/.astro
+
+# Resume files — personal content
+cv-service/public/resumes/vi/resume-vi.md
+cv-service/public/resumes/en/resume-en.md
 cv-service/public/resumes/**/*.pdf
+
+# Keep placeholder structure
+!cv-service/public/resumes/vi/.gitkeep
+!cv-service/public/resumes/en/.gitkeep

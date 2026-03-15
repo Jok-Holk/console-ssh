@@ -18,21 +18,45 @@ const MODULES = [
       },
       {
         key: "VPS_HOST",
-        label: "VPS Host",
-        placeholder: "103.77.243.5",
+        label: "VPS Host (SSH)",
+        placeholder: "your-server-ip",
         type: "text",
       },
       { key: "VPS_USER", label: "VPS User", placeholder: "root", type: "text" },
       {
         key: "NEXT_PUBLIC_VPS_HOST",
         label: "Public VPS Host",
-        placeholder: "103.77.243.5",
+        placeholder: "your-server-ip",
         type: "text",
       },
       {
         key: "NEXT_PUBLIC_VPS_USER",
         label: "Public VPS User",
         placeholder: "root",
+        type: "text",
+      },
+      {
+        key: "APP_DIR",
+        label: "App Directory",
+        placeholder: "/home/user/vps-manager",
+        type: "text",
+      },
+      {
+        key: "PM2_APP_NAME",
+        label: "PM2 Process Name",
+        placeholder: "vps-manager",
+        type: "text",
+      },
+      {
+        key: "GIT_REMOTE",
+        label: "Git Remote",
+        placeholder: "origin",
+        type: "text",
+      },
+      {
+        key: "GIT_BRANCH",
+        label: "Git Branch",
+        placeholder: "main",
         type: "text",
       },
     ],
@@ -158,7 +182,10 @@ export default function SetupPage() {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ updates, restart: ["console-ssh"] }),
+        body: JSON.stringify({
+          updates,
+          restart: [updates["PM2_APP_NAME"] ?? "app"],
+        }),
       });
       if (!res.ok) throw new Error(await res.text());
       setStep(3);

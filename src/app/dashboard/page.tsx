@@ -873,7 +873,7 @@ function SettingsTab({
 
   // Core connection fields
   const CORE_FIELDS = [
-    { key: "VPS_HOST", label: "VPS Host", placeholder: "103.77.243.5" },
+    { key: "VPS_HOST", label: "VPS Host", placeholder: "your-server-ip" },
     { key: "VPS_USER", label: "VPS User", placeholder: "root" },
     {
       key: "REDIS_URL",
@@ -888,14 +888,54 @@ function SettingsTab({
     {
       key: "NEXT_PUBLIC_VPS_HOST",
       label: "Public VPS Host",
-      placeholder: "103.77.243.5",
+      placeholder: "your-server-ip",
     },
     {
       key: "NEXT_PUBLIC_VPS_USER",
       label: "Public VPS User",
       placeholder: "root",
     },
+    {
+      key: "PUBLIC_KEY_ED25519",
+      label: "Ed25519 Public Key",
+      placeholder: "-----BEGIN PUBLIC KEY-----...",
+    },
   ];
+
+  // Deploy config fields
+  const DEPLOY_FIELDS = [
+    {
+      key: "APP_DIR",
+      label: "App Directory",
+      placeholder: "/home/user/vps-manager",
+    },
+    {
+      key: "PM2_APP_NAME",
+      label: "PM2 Process Name",
+      placeholder: "vps-manager",
+    },
+    { key: "GIT_REMOTE", label: "Git Remote", placeholder: "origin" },
+    { key: "GIT_BRANCH", label: "Git Branch", placeholder: "main" },
+  ];
+
+  const [sshTestResult, setSshTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+  const [sshTesting, setSshTesting] = useState(false);
+
+  const testSSH = async () => {
+    setSshTesting(true);
+    setSshTestResult(null);
+    const res = await authFetch("/api/settings/check-ssh");
+    if (res?.ok) {
+      const data = await res.json();
+      setSshTestResult({ ok: data.ok, message: data.message });
+    } else {
+      setSshTestResult({ ok: false, message: "Request failed" });
+    }
+    setSshTesting(false);
+  };
 
   useEffect(() => {
     (async () => {
@@ -932,13 +972,40 @@ function SettingsTab({
       if (v !== (envData?.[k] ?? "")) updates[k] = v;
     }
 
+    // Warn if PUBLIC_KEY_ED25519 is being changed — could lock user out
+    if (updates["PUBLIC_KEY_ED25519"] !== undefined) {
+      const newKey = updates["PUBLIC_KEY_ED25519"];
+      if (newKey && !newKey.includes("BEGIN PUBLIC KEY")) {
+        setSaving(false);
+        setSaveMsg(
+          "Invalid key format — must be a PEM public key (-----BEGIN PUBLIC KEY-----)",
+        );
+        return;
+      }
+      if (
+        envData?.["PUBLIC_KEY_ED25519"] &&
+        newKey !== envData["PUBLIC_KEY_ED25519"]
+      ) {
+        const confirmed = window.confirm(
+          "⚠ You are changing the Ed25519 public key.\n\n" +
+            "If the new key does not match your Electron app, you will be locked out.\n\n" +
+            "Make sure your Electron app is open and ready before confirming.\n\n" +
+            "Continue?",
+        );
+        if (!confirmed) {
+          setSaving(false);
+          return;
+        }
+      }
+    }
+
     const res = await authFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         updates,
-        restart: ["console-ssh"],
-        rebuild: true, // NEXT_PUBLIC vars need a full rebuild
+        restart: [edits["PM2_APP_NAME"] ?? envData?.["PM2_APP_NAME"] ?? "app"],
+        rebuild: true,
       }),
     });
 
@@ -946,8 +1013,7 @@ function SettingsTab({
     if (res?.ok) {
       const data = await res.json();
       if (data.rebuilding) {
-        setSaveMsg("Saved ✓ — building (~30s), will auto-reload...");
-        // Poll until server is back after rebuild
+        setSaveMsg("Saved ✓ — building (~30–60s), will auto-reload...");
         let attempts = 0;
         const poll = setInterval(async () => {
           attempts++;
@@ -955,12 +1021,27 @@ function SettingsTab({
             const r = await fetch("/api/auth/token", { cache: "no-store" });
             if (r.ok || r.status === 401) {
               clearInterval(poll);
+              // Check if build actually succeeded
+              try {
+                const statusRes = await fetch("/api/settings/rebuild-status", {
+                  cache: "no-store",
+                });
+                if (statusRes.ok) {
+                  const { status, log } = await statusRes.json();
+                  if (status === "failed") {
+                    setSaveMsg(
+                      `⚠ Build failed — check server logs.\n\nLast output:\n${log?.split("\n").slice(-8).join("\n")}`,
+                    );
+                    return;
+                  }
+                }
+              } catch {}
               window.location.href = "/dashboard";
             }
           } catch {}
-          if (attempts > 60) {
+          if (attempts > 90) {
             clearInterval(poll);
-            setSaveMsg("Reload manually after build completes.");
+            setSaveMsg("⚠ Server taking too long. Check: pm2 logs vps-manager");
           }
         }, 2000);
       } else {
@@ -972,24 +1053,59 @@ function SettingsTab({
     }
   };
 
-  const healthDot = (key: string) => {
+  const healthBadge = (key: string) => {
     if (!health) return null;
-    const h = health[key];
+    const h = health[key] as
+      | { ok: boolean; status?: string; reason?: string }
+      | undefined;
     if (!h) return null;
+
+    const statusConfig: Record<
+      string,
+      { color: string; label: string; glow?: boolean }
+    > = {
+      ok: { color: "#4ade80", label: "OK", glow: true },
+      empty: { color: "#f59e0b", label: "Empty" },
+      not_running: { color: "#f87171", label: "Not running" },
+      not_installed: { color: "#6b7280", label: "Not installed" },
+      misconfigured: { color: "#f87171", label: "Misconfigured" },
+    };
+
+    const st = (h.status ?? (h.ok ? "ok" : "not_running")) as string;
+    const cfg = statusConfig[st] ?? statusConfig["not_running"];
+
     return (
       <span
-        title={h.reason ?? "OK"}
+        title={h.reason ?? cfg.label}
         style={{
-          display: "inline-block",
-          width: 7,
-          height: 7,
-          borderRadius: "50%",
-          background: h.ok ? "#4ade80" : "#f87171",
-          boxShadow: h.ok ? "0 0 5px rgba(74,222,128,0.6)" : "none",
           marginLeft: 8,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
           verticalAlign: "middle",
         }}
-      />
+      >
+        <span
+          style={{
+            display: "inline-block",
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: cfg.color,
+            boxShadow: cfg.glow ? `0 0 5px ${cfg.color}88` : "none",
+          }}
+        />
+        <span
+          style={{ fontSize: 9, color: cfg.color, letterSpacing: "0.05em" }}
+        >
+          {cfg.label}
+        </span>
+        {h.reason && st !== "ok" && (
+          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>
+            — {h.reason}
+          </span>
+        )}
+      </span>
     );
   };
 
@@ -1045,20 +1161,162 @@ function SettingsTab({
             color: s.muted,
             letterSpacing: "0.13em",
             marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
           }}
         >
-          CORE CONNECTION
-          {healthDot("redis")}
-          {health?.redis && !health.redis.ok && (
-            <span style={{ marginLeft: 8, fontSize: 10, color: s.red }}>
-              {health.redis.reason}
-            </span>
+          <span>CORE CONNECTION</span>
+          {healthBadge("redis")}
+          {healthBadge("ssh")}
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={testSSH}
+            disabled={sshTesting}
+            style={{
+              padding: "4px 12px",
+              background: "transparent",
+              border: `0.5px solid ${s.border}`,
+              borderRadius: 7,
+              color: s.muted,
+              fontFamily: s.mono,
+              fontSize: 10,
+              cursor: "pointer",
+            }}
+          >
+            {sshTesting ? "Testing..." : "Test SSH"}
+          </button>
+        </div>
+        {sshTestResult && (
+          <div
+            style={{
+              fontSize: 11,
+              color: sshTestResult.ok ? s.green : s.red,
+              background: sshTestResult.ok
+                ? "rgba(74,222,128,0.06)"
+                : "rgba(248,113,113,0.06)",
+              border: `0.5px solid ${sshTestResult.ok ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)"}`,
+              borderRadius: 8,
+              padding: "8px 12px",
+              marginBottom: 14,
+            }}
+          >
+            {sshTestResult.ok ? "✓" : "✗"} {sshTestResult.message}
+          </div>
+        )}
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+        >
+          {CORE_FIELDS.filter((f) => f.key !== "PUBLIC_KEY_ED25519").map(
+            (f) => (
+              <div key={f.key}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 10,
+                    color: s.muted,
+                    letterSpacing: "0.1em",
+                    marginBottom: 6,
+                  }}
+                >
+                  {f.label}
+                </label>
+                <input
+                  value={edits[f.key] ?? ""}
+                  onChange={(e) =>
+                    setEdits((prev) => ({ ...prev, [f.key]: e.target.value }))
+                  }
+                  placeholder={f.placeholder}
+                  style={inputStyle}
+                />
+              </div>
+            ),
           )}
+        </div>
+
+        {/* PUBLIC_KEY_ED25519 — full width textarea with hint */}
+        <div style={{ marginTop: 14 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 6,
+            }}
+          >
+            <label
+              style={{ fontSize: 10, color: s.muted, letterSpacing: "0.1em" }}
+            >
+              ED25519 PUBLIC KEY
+            </label>
+            {!(
+              edits["PUBLIC_KEY_ED25519"] ?? envData?.["PUBLIC_KEY_ED25519"]
+            ) && (
+              <span style={{ fontSize: 10, color: s.amber }}>
+                ⚠ Required for Electron login — or generate a key pair manually
+              </span>
+            )}
+            {(edits["PUBLIC_KEY_ED25519"] ??
+              envData?.["PUBLIC_KEY_ED25519"]) && (
+              <span style={{ fontSize: 10, color: s.green }}>
+                ✓ Key configured
+              </span>
+            )}
+          </div>
+          <textarea
+            value={edits["PUBLIC_KEY_ED25519"] ?? ""}
+            onChange={(e) =>
+              setEdits((prev) => ({
+                ...prev,
+                PUBLIC_KEY_ED25519: e.target.value,
+              }))
+            }
+            placeholder={
+              "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n\nGenerate with: ssh-keygen -t ed25519 -f mykey\nthen: ssh-keygen -e -f mykey.pub -m pkcs8\nOr copy from the VPS Key Manager desktop app."
+            }
+            rows={5}
+            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }}
+          />
+          <div
+            style={{
+              fontSize: 10,
+              color: s.muted,
+              marginTop: 6,
+              lineHeight: 1.6,
+            }}
+          >
+            No desktop app? Run on your local machine:{" "}
+            <code
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                padding: "1px 6px",
+                borderRadius: 4,
+              }}
+            >
+              ssh-keygen -t ed25519 -f vpskey && ssh-keygen -e -f vpskey.pub -m
+              pkcs8
+            </code>{" "}
+            → paste the output above.
+          </div>
+        </div>
+      </div>
+
+      {/* Deploy config */}
+      <div style={card()}>
+        <div
+          style={{
+            fontSize: 11,
+            color: s.muted,
+            letterSpacing: "0.13em",
+            marginBottom: 16,
+          }}
+        >
+          DEPLOY CONFIG
         </div>
         <div
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
         >
-          {CORE_FIELDS.map((f) => (
+          {DEPLOY_FIELDS.map((f) => (
             <div key={f.key}>
               <label
                 style={{
@@ -1130,14 +1388,7 @@ function SettingsTab({
                   </span>
                   <span style={{ flex: 1, fontSize: 13, color: s.text }}>
                     {mod.label}
-                    {on && hkey && healthDot(hkey)}
-                    {on && hkey && health?.[hkey] && !health[hkey].ok && (
-                      <span
-                        style={{ marginLeft: 8, fontSize: 10, color: s.red }}
-                      >
-                        {health[hkey].reason}
-                      </span>
-                    )}
+                    {on && hkey && healthBadge(hkey)}
                   </span>
                   {/* Toggle switch */}
                   <div
@@ -1213,6 +1464,162 @@ function SettingsTab({
         </div>
       </div>
 
+      {/* Quick Access config */}
+      <div style={card()}>
+        <div
+          style={{
+            fontSize: 11,
+            color: s.muted,
+            letterSpacing: "0.13em",
+            marginBottom: 16,
+          }}
+        >
+          QUICK ACCESS SHORTCUTS
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            color: s.muted,
+            marginBottom: 14,
+            lineHeight: 1.6,
+          }}
+        >
+          Toggle shortcuts on the Dashboard home. Grid columns (2–4) controls
+          how many per row.
+        </div>
+        {/* Grid column picker */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 16,
+          }}
+        >
+          <span style={{ fontSize: 11, color: s.muted }}>Columns:</span>
+          {[2, 3, 4].map((n) => {
+            const key = "NEXT_PUBLIC_QA_COLS";
+            const current = parseInt(edits[key] ?? envData?.[key] ?? "3");
+            return (
+              <button
+                key={n}
+                onClick={() =>
+                  setEdits((prev) => ({ ...prev, [key]: String(n) }))
+                }
+                style={{
+                  width: 32,
+                  height: 28,
+                  background:
+                    current === n ? "rgba(148,120,255,0.25)" : "transparent",
+                  border: `0.5px solid ${current === n ? "rgba(148,120,255,0.5)" : s.border}`,
+                  borderRadius: 7,
+                  color: current === n ? s.purple : s.muted,
+                  fontFamily: s.mono,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                {n}
+              </button>
+            );
+          })}
+        </div>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        >
+          {[
+            {
+              envKey: "NEXT_PUBLIC_QA_TERMINAL",
+              label: ">_ Terminal",
+              defaultOn: true,
+            },
+            {
+              envKey: "NEXT_PUBLIC_QA_MONITOR",
+              label: "◈ Monitor",
+              defaultOn: true,
+            },
+            {
+              envKey: "NEXT_PUBLIC_QA_DOCKER",
+              label: "▣ Docker",
+              defaultOn: true,
+            },
+            { envKey: "NEXT_PUBLIC_QA_PM2", label: "⟳ PM2", defaultOn: true },
+            {
+              envKey: "NEXT_PUBLIC_QA_FILES",
+              label: "⊟ Files",
+              defaultOn: true,
+            },
+            {
+              envKey: "NEXT_PUBLIC_QA_CV",
+              label: "✎ CV Editor",
+              defaultOn: false,
+            },
+          ].map(({ envKey, label, defaultOn }) => {
+            const val = edits[envKey] ?? envData?.[envKey];
+            const on = val !== undefined ? val !== "false" : defaultOn;
+            return (
+              <div
+                key={envKey}
+                onClick={() =>
+                  setEdits((prev) => ({
+                    ...prev,
+                    [envKey]: on ? "false" : "true",
+                  }))
+                }
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 12px",
+                  background: on
+                    ? "rgba(128,96,208,0.06)"
+                    : "rgba(255,255,255,0.02)",
+                  border: `0.5px solid ${on ? "rgba(148,120,255,0.2)" : s.border}`,
+                  borderRadius: 9,
+                  cursor: "pointer",
+                }}
+              >
+                <span
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    color: on ? s.text : s.muted,
+                  }}
+                >
+                  {label}
+                </span>
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    background: on
+                      ? "rgba(148,120,255,0.4)"
+                      : "rgba(255,255,255,0.08)",
+                    border: `0.5px solid ${on ? "rgba(148,120,255,0.5)" : s.border}`,
+                    position: "relative",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: "50%",
+                      background: on ? s.purple : s.muted,
+                      position: "absolute",
+                      top: 2,
+                      left: on ? 16 : 2,
+                      transition: "left 0.15s",
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Save */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {saveMsg && (
@@ -1258,8 +1665,8 @@ function SettingsTab({
         }}
       >
         ⚠ Saving will write to <code style={{ color: s.amber }}>.env</code> and
-        restart the <code style={{ color: s.amber }}>console-ssh</code> process.
-        Dashboard will reload in ~4 seconds.
+        trigger a rebuild + PM2 reload. Dashboard will reload automatically when
+        ready (~30s).
       </div>
     </div>
   );
@@ -1314,13 +1721,26 @@ function CvEditor({
     if (!md) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
-      const res = await fetch("/api/cv/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lang, md, css }),
-      });
-      if (res.ok && previewRef.current)
-        previewRef.current.srcdoc = await res.text();
+      try {
+        const res = await fetch("/api/cv/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lang, md, css }),
+        });
+        if (res.ok && previewRef.current) {
+          previewRef.current.srcdoc = await res.text();
+        } else if (!res.ok && previewRef.current) {
+          const errMsg =
+            res.status === 502
+              ? "CV service is not running. Start cv-service or check Settings."
+              : `Preview error: HTTP ${res.status}`;
+          previewRef.current.srcdoc = `<html><body style="background:#0f0f1e;color:#f87171;font-family:monospace;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><div style="font-size:24px;margin-bottom:12px">⚠</div><div>${errMsg}</div></div></body></html>`;
+        }
+      } catch {
+        if (previewRef.current) {
+          previewRef.current.srcdoc = `<html><body style="background:#0f0f1e;color:#f87171;font-family:monospace;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><div style="font-size:24px;margin-bottom:12px">⚠</div><div>Cannot reach CV service</div></div></body></html>`;
+        }
+      }
     }, 500);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -1364,7 +1784,7 @@ function CvEditor({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = lang === "vi" ? "CV_PhucThai_VI.pdf" : "CV_PhucThai_EN.pdf";
+      a.download = `resume-${lang}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -1672,6 +2092,25 @@ export default function DashboardPage() {
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const logsRef = useRef<EventSource | null>(null);
+  const [qaCols, setQaCols] = useState(() =>
+    parseInt(process.env.NEXT_PUBLIC_QA_COLS ?? "3"),
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // Collapse sidebar on small screens by default
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    if (mq.matches) setSidebarOpen(false);
+    const handler = (e: MediaQueryListEvent) => setSidebarOpen(!e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Auto-scroll PM2 logs to bottom on new lines
+  useEffect(() => {
+    const el = document.getElementById("pm2-log-body");
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [pm2Logs?.lines.length]);
 
   const s: S = {
     bg: "#080810",
@@ -1901,143 +2340,170 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Sidebar */}
+      {/* Sidebar — collapsible on mobile */}
       <aside
         style={{
-          width: 210,
-          borderRight: `0.5px solid ${s.border}`,
+          width: sidebarOpen ? 210 : 0,
+          minWidth: sidebarOpen ? 210 : 0,
+          borderRight: sidebarOpen ? `0.5px solid ${s.border}` : "none",
           display: "flex",
           flexDirection: "column",
           flexShrink: 0,
           background: "#0b0b18",
+          overflow: "hidden",
+          transition: "width 0.2s ease, min-width 0.2s ease",
+          position: "relative",
+          zIndex: 20,
         }}
       >
         <div
           style={{
-            padding: "20px 18px 16px",
-            borderBottom: `0.5px solid ${s.border}`,
+            width: 210,
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                background: "#151530",
-                border: "0.5px solid rgba(148,120,255,0.3)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <polygon
-                  points="8,1 14,4.5 14,11.5 8,15 2,11.5 2,4.5"
-                  stroke="#9478ff"
-                  strokeWidth="1.2"
-                  fill="none"
-                />
-                <circle cx="8" cy="8" r="2.2" fill="#9478ff" />
-              </svg>
-            </div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 500, color: "#ede8ff" }}>
-                VPS Manager
+          <div
+            style={{
+              padding: "20px 18px 16px",
+              borderBottom: `0.5px solid ${s.border}`,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  background: "#151530",
+                  border: "0.5px solid rgba(148,120,255,0.3)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <polygon
+                    points="8,1 14,4.5 14,11.5 8,15 2,11.5 2,4.5"
+                    stroke="#9478ff"
+                    strokeWidth="1.2"
+                    fill="none"
+                  />
+                  <circle cx="8" cy="8" r="2.2" fill="#9478ff" />
+                </svg>
               </div>
-              <div style={{ fontSize: 10, color: s.muted, marginTop: 1 }}>
-                {process.env.NEXT_PUBLIC_VPS_USER}@
-                {process.env.NEXT_PUBLIC_VPS_HOST}
+              <div>
+                <div
+                  style={{ fontSize: 13, fontWeight: 500, color: "#ede8ff" }}
+                >
+                  VPS Manager
+                </div>
+                <div style={{ fontSize: 10, color: s.muted, marginTop: 1 }}>
+                  {process.env.NEXT_PUBLIC_VPS_USER}@
+                  {process.env.NEXT_PUBLIC_VPS_HOST}
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <nav style={{ flex: 1, padding: "10px 0" }}>
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id as TabId)}
+          <nav style={{ flex: 1, padding: "10px 0" }}>
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setTab(t.id as TabId);
+                  // Close sidebar on mobile after selecting tab
+                  if (window.matchMedia("(max-width: 768px)").matches)
+                    setSidebarOpen(false);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  width: "100%",
+                  padding: "11px 18px",
+                  background:
+                    tab === t.id ? "rgba(128,96,208,0.12)" : "transparent",
+                  border: "none",
+                  borderLeft: `2px solid ${tab === t.id ? "#8060d0" : "transparent"}`,
+                  color: tab === t.id ? "#c4adff" : s.muted,
+                  fontFamily: s.mono,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  letterSpacing: "0.03em",
+                  transition: "all 0.12s",
+                  textAlign: "left",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 14,
+                    width: 18,
+                    textAlign: "center",
+                    opacity: tab === t.id ? 1 : 0.6,
+                  }}
+                >
+                  {t.icon}
+                </span>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+
+          <div
+            style={{
+              padding: "14px 18px",
+              borderTop: `0.5px solid ${s.border}`,
+            }}
+          >
+            <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 10,
-                width: "100%",
-                padding: "11px 18px",
-                background:
-                  tab === t.id ? "rgba(128,96,208,0.12)" : "transparent",
-                border: "none",
-                borderLeft: `2px solid ${tab === t.id ? "#8060d0" : "transparent"}`,
-                color: tab === t.id ? "#c4adff" : s.muted,
-                fontFamily: s.mono,
-                fontSize: 13,
-                cursor: "pointer",
-                letterSpacing: "0.03em",
-                transition: "all 0.12s",
-                textAlign: "left",
+                gap: 7,
+                marginBottom: 12,
+                fontSize: 11,
               }}
             >
               <span
                 style={{
-                  fontSize: 14,
-                  width: 18,
-                  textAlign: "center",
-                  opacity: tab === t.id ? 1 : 0.6,
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: connected ? s.green : s.red,
+                  boxShadow: connected
+                    ? `0 0 5px rgba(74,222,128,0.7)`
+                    : "none",
+                  display: "inline-block",
+                  animation: connected ? "none" : "pulse 1.5s infinite",
                 }}
-              >
-                {t.icon}
+              />
+              <span style={{ color: connected ? s.green : s.red }}>
+                {connected ? "Connected" : "Offline"}
               </span>
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        <div
-          style={{ padding: "14px 18px", borderTop: `0.5px solid ${s.border}` }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              marginBottom: 12,
-              fontSize: 11,
-            }}
-          >
-            <span
+            </div>
+            <button
+              onClick={logout}
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: connected ? s.green : s.red,
-                boxShadow: connected ? `0 0 5px rgba(74,222,128,0.7)` : "none",
-                display: "inline-block",
-                animation: connected ? "none" : "pulse 1.5s infinite",
+                width: "100%",
+                padding: "8px",
+                background: "rgba(248,113,113,0.07)",
+                border: "0.5px solid rgba(248,113,113,0.2)",
+                borderRadius: 8,
+                color: s.red,
+                fontFamily: s.mono,
+                fontSize: 11,
+                cursor: "pointer",
+                letterSpacing: "0.1em",
               }}
-            />
-            <span style={{ color: connected ? s.green : s.red }}>
-              {connected ? "Connected" : "Offline"}
-            </span>
+            >
+              LOGOUT
+            </button>
           </div>
-          <button
-            onClick={logout}
-            style={{
-              width: "100%",
-              padding: "8px",
-              background: "rgba(248,113,113,0.07)",
-              border: "0.5px solid rgba(248,113,113,0.2)",
-              borderRadius: 8,
-              color: s.red,
-              fontFamily: s.mono,
-              fontSize: 11,
-              cursor: "pointer",
-              letterSpacing: "0.1em",
-            }}
-          >
-            LOGOUT
-          </button>
         </div>
+        {/* end inner wrapper */}
       </aside>
 
       {/* Main */}
@@ -2057,10 +2523,32 @@ export default function DashboardPage() {
             borderBottom: `0.5px solid ${s.border}`,
             display: "flex",
             alignItems: "center",
-            gap: 16,
+            gap: 12,
             flexShrink: 0,
           }}
         >
+          {/* Hamburger toggle */}
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            style={{
+              width: 32,
+              height: 32,
+              background: "transparent",
+              border: `0.5px solid ${s.border}`,
+              borderRadius: 8,
+              color: s.muted,
+              fontFamily: s.mono,
+              fontSize: 15,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              lineHeight: 1,
+            }}
+          >
+            {sidebarOpen ? "←" : "☰"}
+          </button>
           <div
             style={{ flex: 1, fontSize: 14, fontWeight: 500, color: "#ede8ff" }}
           >
@@ -2260,82 +2748,152 @@ export default function DashboardPage() {
               <div style={{ ...card(), gridColumn: "1 / 4" }}>
                 <div
                   style={{
-                    fontSize: 11,
-                    color: s.muted,
-                    letterSpacing: "0.13em",
-                    marginBottom: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 16,
                   }}
                 >
-                  QUICK ACCESS
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: s.muted,
+                      letterSpacing: "0.13em",
+                    }}
+                  >
+                    QUICK ACCESS
+                  </span>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {[2, 3, 4].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => setQaCols(n)}
+                        style={{
+                          width: 26,
+                          height: 22,
+                          background:
+                            qaCols === n
+                              ? "rgba(148,120,255,0.25)"
+                              : "transparent",
+                          border: `0.5px solid ${qaCols === n ? "rgba(148,120,255,0.5)" : s.border}`,
+                          borderRadius: 5,
+                          color: qaCols === n ? s.purple : s.muted,
+                          fontFamily: s.mono,
+                          fontSize: 10,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                    gap: 10,
+                    gridTemplateColumns: `repeat(${qaCols}, 1fr)`,
+                    gap: 12,
                   }}
                 >
-                  {(
-                    [
-                      {
-                        id: "terminal",
-                        icon: ">_",
-                        label: "Terminal",
-                        sub: "SSH Console",
-                      },
-                      {
-                        id: "monitor",
-                        icon: "◈",
-                        label: "Monitor",
-                        sub: "Realtime",
-                      },
-                      {
-                        id: "docker",
-                        icon: "▣",
-                        label: "Docker",
-                        sub: "Containers",
-                      },
-                      { id: "pm2", icon: "⟳", label: "PM2", sub: "Processes" },
-                      { id: "files", icon: "⊟", label: "Files", sub: "SFTP" },
-                    ] as const
-                  ).map((item) => (
-                    <div
-                      key={item.id}
-                      onClick={() => setTab(item.id)}
-                      style={{
-                        background: "rgba(255,255,255,0.025)",
-                        border: `0.5px solid ${s.border}`,
-                        borderRadius: 12,
-                        padding: "14px 10px",
-                        cursor: "pointer",
-                        textAlign: "center",
-                        transition: "all 0.12s",
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.borderColor =
-                          "rgba(148,120,255,0.35)";
-                        e.currentTarget.style.background =
-                          "rgba(128,96,208,0.08)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.borderColor = s.border;
-                        e.currentTarget.style.background =
-                          "rgba(255,255,255,0.025)";
-                      }}
-                    >
-                      <div style={{ fontSize: 20, marginBottom: 7 }}>
-                        {item.icon}
-                      </div>
-                      <div style={{ fontSize: 12, fontWeight: 500 }}>
-                        {item.label}
-                      </div>
+                  {[
+                    {
+                      id: "terminal",
+                      icon: ">_",
+                      label: "Terminal",
+                      sub: "SSH Console",
+                      always: true,
+                      flag: "metrics" as const,
+                      qaKey: "NEXT_PUBLIC_QA_TERMINAL",
+                    },
+                    {
+                      id: "monitor",
+                      icon: "◈",
+                      label: "Monitor",
+                      sub: "Realtime",
+                      always: false,
+                      flag: "metrics" as const,
+                      qaKey: "NEXT_PUBLIC_QA_MONITOR",
+                    },
+                    {
+                      id: "docker",
+                      icon: "▣",
+                      label: "Docker",
+                      sub: "Containers",
+                      always: false,
+                      flag: "docker" as const,
+                      qaKey: "NEXT_PUBLIC_QA_DOCKER",
+                    },
+                    {
+                      id: "pm2",
+                      icon: "⟳",
+                      label: "PM2",
+                      sub: "Processes",
+                      always: false,
+                      flag: "pm2" as const,
+                      qaKey: "NEXT_PUBLIC_QA_PM2",
+                    },
+                    {
+                      id: "files",
+                      icon: "⊟",
+                      label: "Files",
+                      sub: "SFTP",
+                      always: false,
+                      flag: "files" as const,
+                      qaKey: "NEXT_PUBLIC_QA_FILES",
+                    },
+                    {
+                      id: "cv",
+                      icon: "✎",
+                      label: "CV Editor",
+                      sub: "PDF Export",
+                      always: false,
+                      flag: "cv" as const,
+                      qaKey: "NEXT_PUBLIC_QA_CV",
+                    },
+                  ]
+                    .filter((item) => {
+                      const modOn = item.always || modules[item.flag];
+                      const qaOn = process.env[item.qaKey] !== "false";
+                      return modOn && qaOn;
+                    })
+                    .map((item) => (
                       <div
-                        style={{ fontSize: 10, color: s.muted, marginTop: 3 }}
+                        key={item.id}
+                        onClick={() => setTab(item.id as TabId)}
+                        style={{
+                          background: "rgba(255,255,255,0.025)",
+                          border: `0.5px solid ${s.border}`,
+                          borderRadius: 12,
+                          padding: "20px 14px",
+                          cursor: "pointer",
+                          textAlign: "center",
+                          transition: "all 0.12s",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor =
+                            "rgba(148,120,255,0.35)";
+                          e.currentTarget.style.background =
+                            "rgba(128,96,208,0.08)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = s.border;
+                          e.currentTarget.style.background =
+                            "rgba(255,255,255,0.025)";
+                        }}
                       >
-                        {item.sub}
+                        <div style={{ fontSize: 24, marginBottom: 9 }}>
+                          {item.icon}
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>
+                          {item.label}
+                        </div>
+                        <div
+                          style={{ fontSize: 11, color: s.muted, marginTop: 4 }}
+                        >
+                          {item.sub}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               </div>
             </div>
@@ -2843,8 +3401,9 @@ export default function DashboardPage() {
               <div
                 style={{
                   ...card(),
-                  flex: pm2Logs ? "0 0 auto" : 1,
+                  flex: 1,
                   overflow: "auto",
+                  minHeight: pm2Logs ? 200 : undefined,
                 }}
               >
                 <div
@@ -2969,15 +3528,22 @@ export default function DashboardPage() {
                           (action) => (
                             <button
                               key={action}
-                              onClick={() =>
+                              onClick={() => {
+                                if (
+                                  action === "delete" &&
+                                  !window.confirm(
+                                    `Delete "${p.name}" from PM2?\n\nThe server will NOT auto-restart it.`,
+                                  )
+                                )
+                                  return;
                                 authFetch("/api/pm2", {
                                   method: "POST",
                                   headers: {
                                     "Content-Type": "application/json",
                                   },
                                   body: JSON.stringify({ id: p.id, action }),
-                                }).then(() => setTimeout(fetchPm2, 1000))
-                              }
+                                }).then(() => setTimeout(fetchPm2, 1000));
+                              }}
                               style={{
                                 padding: "6px 14px",
                                 background: "transparent",
@@ -3040,12 +3606,14 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {/* Logs panel — bottom drawer, fixed height */}
+              {/* Logs panel — bottom drawer, taller, auto-scroll */}
               {pm2Logs && (
                 <div
                   style={{
                     ...card(),
-                    height: 280,
+                    height: "40%",
+                    minHeight: 240,
+                    maxHeight: 420,
                     display: "flex",
                     flexDirection: "column",
                     flexShrink: 0,
@@ -3061,45 +3629,67 @@ export default function DashboardPage() {
                   >
                     <span
                       style={{
-                        fontSize: 11,
+                        fontSize: 12,
                         color: s.muted,
-                        letterSpacing: "0.13em",
+                        letterSpacing: "0.12em",
                       }}
                     >
                       LOGS —{" "}
                       <span style={{ color: s.cyan }}>{pm2Logs.name}</span>
                       <span
-                        style={{ color: s.muted, marginLeft: 10, fontSize: 10 }}
+                        style={{ color: s.muted, marginLeft: 10, fontSize: 11 }}
                       >
-                        ({pm2Logs.lines.length} lines)
+                        ({pm2Logs.lines.length} lines, capped at 300)
                       </span>
                     </span>
-                    <button
-                      onClick={() => {
-                        logsRef.current?.close();
-                        setPm2Logs(null);
-                      }}
-                      style={{
-                        padding: "5px 12px",
-                        background: "transparent",
-                        border: `0.5px solid ${s.border}`,
-                        borderRadius: 7,
-                        color: s.muted,
-                        fontFamily: s.mono,
-                        fontSize: 11,
-                        cursor: "pointer",
-                      }}
-                    >
-                      ✕ Close
-                    </button>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() => {
+                          // Scroll to bottom
+                          const el = document.getElementById("pm2-log-body");
+                          if (el) el.scrollTop = el.scrollHeight;
+                        }}
+                        style={{
+                          padding: "4px 10px",
+                          background: "transparent",
+                          border: `0.5px solid ${s.border}`,
+                          borderRadius: 6,
+                          color: s.muted,
+                          fontFamily: s.mono,
+                          fontSize: 10,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ↓ Bottom
+                      </button>
+                      <button
+                        onClick={() => {
+                          logsRef.current?.close();
+                          setPm2Logs(null);
+                        }}
+                        style={{
+                          padding: "4px 10px",
+                          background: "transparent",
+                          border: `0.5px solid ${s.border}`,
+                          borderRadius: 6,
+                          color: s.muted,
+                          fontFamily: s.mono,
+                          fontSize: 11,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </div>
                   </div>
                   <div
+                    id="pm2-log-body"
                     style={{
                       flex: 1,
                       overflow: "auto",
-                      background: "rgba(0,0,0,0.3)",
+                      background: "rgba(0,0,0,0.35)",
                       borderRadius: 9,
-                      padding: "12px 14px",
+                      padding: "10px 14px",
                     }}
                   >
                     {pm2Logs.lines.length === 0 ? (
@@ -3112,7 +3702,7 @@ export default function DashboardPage() {
                           key={i}
                           style={{
                             fontSize: 12,
-                            lineHeight: 1.7,
+                            lineHeight: 1.65,
                             fontFamily: s.mono,
                             whiteSpace: "pre-wrap",
                             wordBreak: "break-all",
@@ -3122,7 +3712,7 @@ export default function DashboardPage() {
                                 ? s.red
                                 : line.toLowerCase().includes("warn")
                                   ? s.amber
-                                  : "rgba(255,255,255,0.55)",
+                                  : "rgba(255,255,255,0.6)",
                           }}
                         >
                           {line}

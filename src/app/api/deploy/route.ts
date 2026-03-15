@@ -14,8 +14,10 @@ function authCheck(request: NextRequest): boolean {
   }
 }
 
-const APP_DIR = process.env.APP_DIR ?? "/root/console-ssh";
-const PM2_NAME = process.env.PM2_APP_NAME ?? "console-ssh";
+const APP_DIR = process.env.APP_DIR ?? process.cwd();
+const PM2_NAME = process.env.PM2_APP_NAME ?? "app";
+const GIT_REMOTE = process.env.GIT_REMOTE ?? "origin";
+const GIT_BRANCH = process.env.GIT_BRANCH ?? "main";
 
 // GET — check git status
 export async function GET(request: NextRequest) {
@@ -23,15 +25,15 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    execSync("git fetch origin", { cwd: APP_DIR, timeout: 15000 });
+    execSync(`git fetch ${GIT_REMOTE}`, { cwd: APP_DIR, timeout: 15000 });
     const status = execSync("git status -sb", {
       cwd: APP_DIR,
       encoding: "utf8",
     }).trim();
-    const log = execSync("git log HEAD..origin/main --oneline", {
-      cwd: APP_DIR,
-      encoding: "utf8",
-    }).trim();
+    const log = execSync(
+      `git log HEAD..${GIT_REMOTE}/${GIT_BRANCH} --oneline`,
+      { cwd: APP_DIR, encoding: "utf8" },
+    ).trim();
     const current = execSync("git log -1 --format='%h %s %cr'", {
       cwd: APP_DIR,
       encoding: "utf8",
@@ -119,7 +121,7 @@ export async function POST(request: NextRequest) {
         const pulled = await runStep(
           "git pull",
           "git",
-          ["pull", "origin", "main"],
+          ["pull", GIT_REMOTE, GIT_BRANCH],
           APP_DIR,
         );
 
@@ -134,10 +136,10 @@ export async function POST(request: NextRequest) {
             }).trim();
             if (status === "") {
               // Might be already up to date — check log
-              const behind = execSync("git log HEAD..origin/main --oneline", {
-                cwd: APP_DIR,
-                encoding: "utf8",
-              }).trim();
+              const behind = execSync(
+                `git log HEAD..${GIT_REMOTE}/${GIT_BRANCH} --oneline`,
+                { cwd: APP_DIR, encoding: "utf8" },
+              ).trim();
               if (behind === "") {
                 send("step", {
                   step: "npm build",

@@ -1,24 +1,7 @@
 import { NextRequest } from "next/server";
-import { Client } from "ssh2";
-import { readFileSync } from "fs";
+import { spawn } from "child_process";
 import jwt from "jsonwebtoken";
 
-function getSSHClient(): Promise<Client> {
-  return new Promise((resolve, reject) => {
-    const ssh = new Client();
-    ssh
-      .on("ready", () => resolve(ssh))
-      .on("error", reject)
-      .connect({
-        host: process.env.VPS_HOST,
-        port: 22,
-        username: process.env.VPS_USER,
-        privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
-      });
-  });
-}
-
-// GET /api/pm2/logs?name=console-ssh&lines=50
 export async function GET(request: NextRequest) {
   const token = request.cookies.get("authToken")?.value;
   if (!token) return new Response("Unauthorized", { status: 401 });
@@ -31,46 +14,88 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const name =
     url.searchParams.get("name")?.replace(/[^a-zA-Z0-9_\-]/g, "") ?? "";
-  const lines = Math.min(parseInt(url.searchParams.get("lines") ?? "100"), 500);
+  const lines = Math.min(parseInt(url.searchParams.get("lines") ?? "150"), 500);
 
   if (!name) return new Response("Missing name", { status: 400 });
 
-  const ssh = await getSSHClient();
+  // Check PM2 available
+  const { execSync } = await import("child_process");
+  try {
+    execSync("which pm2", { stdio: "pipe" });
+  } catch {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ line: "PM2 not installed" })}\n\n`,
+          ),
+        );
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+      },
+    });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
-    async start(controller) {
-      const send = (data: string) => {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify({ line: data })}\n\n`),
-        );
+    start(controller) {
+      let closed = false;
+      const send = (line: string) => {
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ line })}\n\n`),
+          );
+        } catch {
+          closed = true;
+        }
       };
 
-      ssh.exec(
-        `pm2 logs ${name} --lines ${lines} --nostream 2>&1`,
-        (err, s) => {
-          if (err) {
-            send(`Error: ${err.message}`);
-            controller.close();
-            ssh.end();
-            return;
-          }
-          s.on("data", (d: Buffer) => {
-            d.toString().split("\n").filter(Boolean).forEach(send);
-          });
-          s.stderr.on("data", (d: Buffer) => {
-            d.toString().split("\n").filter(Boolean).forEach(send);
-          });
-          s.on("close", () => {
-            controller.close();
-            ssh.end();
-          });
+      // First dump existing lines
+      const proc = spawn(
+        "pm2",
+        ["logs", name, "--lines", String(lines), "--nostream", "--raw"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
         },
       );
 
+      proc.stdout.on("data", (d: Buffer) => {
+        d.toString().split("\n").filter(Boolean).forEach(send);
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        d.toString().split("\n").filter(Boolean).forEach(send);
+      });
+      proc.on("close", () => {
+        if (!closed) {
+          try {
+            controller.close();
+          } catch {}
+        }
+        closed = true;
+      });
+      proc.on("error", (e) => {
+        send(`Error: ${e.message}`);
+        if (!closed) {
+          try {
+            controller.close();
+          } catch {}
+        }
+        closed = true;
+      });
+
       request.signal.addEventListener("abort", () => {
-        ssh.end();
-        controller.close();
+        closed = true;
+        proc.kill();
+        try {
+          controller.close();
+        } catch {}
       });
     },
   });
@@ -80,6 +105,7 @@ export async function GET(request: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

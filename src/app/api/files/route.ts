@@ -1,24 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Client } from "ssh2";
-import { readFileSync } from "fs";
+import {
+  readdirSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  mkdirSync,
+} from "fs";
+import { join, basename, dirname } from "path";
+import { execSync } from "child_process";
 import jwt from "jsonwebtoken";
 
-function getSSHClient(): Promise<Client> {
-  return new Promise((resolve, reject) => {
-    const ssh = new Client();
-    ssh
-      .on("ready", () => resolve(ssh))
-      .on("error", reject)
-      .connect({
-        host: process.env.VPS_HOST,
-        port: 22,
-        username: process.env.VPS_USER,
-        privateKey: readFileSync(process.env.VPS_PRIVATE_KEY_PATH!),
-      });
-  });
-}
-
-function authCheck(request: NextRequest) {
+function authCheck(request: NextRequest): boolean {
   const token = request.cookies.get("authToken")?.value;
   if (!token) return false;
   try {
@@ -29,15 +23,40 @@ function authCheck(request: NextRequest) {
   }
 }
 
+// Safe path — prevent directory traversal outside allowed roots
+const ALLOWED_ROOTS = [
+  "/root",
+  "/home",
+  "/var/log",
+  "/etc/nginx",
+  "/opt",
+  "/srv",
+];
+const BLOCKED_FILES = ["/etc/shadow", "/etc/gshadow", "/etc/sudoers"];
+
 function safePath(p: string): string {
-  const user = process.env.VPS_USER;
-  const base = user === "root" ? "/root" : `/home/${user}`;
-  const resolved = p.startsWith("/") ? p : `${base}/${p}`;
-  if (!resolved.startsWith("/")) return base;
-  return resolved;
+  const user = process.env.VPS_USER ?? "root";
+  const defaultBase = user === "root" ? "/root" : `/home/${user}`;
+  if (!p || !p.startsWith("/")) return defaultBase;
+  // Strip traversal
+  const normalized =
+    p
+      .replace(/\/+/g, "/")
+      .split("/")
+      .reduce((acc: string[], seg) => {
+        if (seg === ".." || seg === ".") return acc;
+        return [...acc, seg];
+      }, [])
+      .join("/") || "/";
+  return normalized || defaultBase;
 }
 
-const TEXT_EXTENSIONS = new Set([
+function isPathAllowed(p: string): boolean {
+  if (BLOCKED_FILES.includes(p)) return false;
+  return ALLOWED_ROOTS.some((root) => p === root || p.startsWith(root + "/"));
+}
+
+const TEXT_EXTS = new Set([
   "txt",
   "md",
   "ts",
@@ -73,267 +92,210 @@ const TEXT_EXTENSIONS = new Set([
   "makefile",
   "nginx",
   "service",
+  "mjs",
+  "cjs",
+  "astro",
+  "vue",
+  "svelte",
 ]);
 
-function isTextFile(filename: string): boolean {
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  if (TEXT_EXTENSIONS.has(ext)) return true;
-  return [
-    "dockerfile",
-    "makefile",
-    "rakefile",
-    "procfile",
-    "readme",
-    "license",
-    "changelog",
-  ].includes(filename.toLowerCase());
+function isViewable(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return (
+    TEXT_EXTS.has(ext) ||
+    [
+      "dockerfile",
+      "makefile",
+      "rakefile",
+      "procfile",
+      "readme",
+      "license",
+      "changelog",
+      "nginx",
+    ].includes(name.toLowerCase())
+  );
 }
 
+// GET — list directory, view file, download file, zip folder
 export async function GET(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
-  const path = safePath(url.searchParams.get("path") || "");
-  const download = url.searchParams.get("download") === "1";
+  const p = safePath(url.searchParams.get("path") ?? "");
   const view = url.searchParams.get("view") === "1";
+  const dl = url.searchParams.get("download") === "1";
   const zip = url.searchParams.get("zip") === "1";
 
-  const ssh = await getSSHClient();
+  if (!existsSync(p))
+    return NextResponse.json({ error: "Path not found" }, { status: 404 });
 
-  // Download folder as zip
+  if (!isPathAllowed(p))
+    return NextResponse.json(
+      { error: "Access denied — path outside allowed roots" },
+      { status: 403 },
+    );
+
+  // Zip folder
   if (zip) {
-    return new Promise<NextResponse>((resolve) => {
-      ssh.exec(
-        `cd "${path}/.." && zip -r - "${path.split("/").pop()}" 2>/dev/null`,
-        (err, stream) => {
-          if (err) {
-            ssh.end();
-            return resolve(
-              NextResponse.json({ error: "Zip failed" }, { status: 500 }),
-            );
-          }
-          const chunks: Buffer[] = [];
-          stream.on("data", (d: Buffer) => chunks.push(d));
-          stream.on("close", () => {
-            ssh.end();
-            resolve(
-              new NextResponse(Buffer.concat(chunks), {
-                headers: {
-                  "Content-Disposition": `attachment; filename="${path.split("/").pop()}.zip"`,
-                  "Content-Type": "application/zip",
-                },
-              }),
-            );
-          });
-          stream.on("error", () => {
-            ssh.end();
-            resolve(
-              NextResponse.json({ error: "Zip stream error" }, { status: 500 }),
-            );
-          });
+    try {
+      const name = basename(p);
+      const parent = dirname(p);
+      const zipBuf = execSync(
+        `cd "${parent}" && zip -r - "${name}" 2>/dev/null`,
+        {
+          maxBuffer: 100 * 1024 * 1024,
         },
       );
-    });
+      return new NextResponse(new Uint8Array(zipBuf), {
+        headers: {
+          "Content-Disposition": `attachment; filename="${name}.zip"`,
+          "Content-Type": "application/zip",
+        },
+      });
+    } catch {
+      return NextResponse.json(
+        { error: "zip failed — install zip: apt install zip" },
+        { status: 500 },
+      );
+    }
   }
 
-  return new Promise<NextResponse>((resolve) => {
-    ssh.sftp((err, sftp) => {
-      if (err) {
-        ssh.end();
-        return resolve(
-          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
+  const stat = statSync(p);
+
+  // View / download file
+  if (stat.isFile()) {
+    if (view) {
+      try {
+        const content = readFileSync(p, "utf8");
+        return new Response(content, {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      } catch {
+        return NextResponse.json(
+          { error: "Cannot read file" },
+          { status: 500 },
         );
       }
+    }
+    if (dl) {
+      const buf = readFileSync(p);
+      return new NextResponse(new Uint8Array(buf), {
+        headers: {
+          "Content-Disposition": `attachment; filename="${basename(p)}"`,
+          "Content-Type": "application/octet-stream",
+        },
+      });
+    }
+  }
 
-      if (download || view) {
-        const chunks: Buffer[] = [];
-        const stream = sftp.createReadStream(path);
-        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-        stream.on("close", () => {
-          ssh.end();
-          const filename = path.split("/").pop() || "file";
-          const content = Buffer.concat(chunks);
-          if (view) {
-            resolve(
-              new NextResponse(content, {
-                headers: {
-                  "Content-Type": "text/plain; charset=utf-8",
-                  "X-Filename": filename,
-                },
-              }),
-            );
-          } else {
-            resolve(
-              new NextResponse(content, {
-                headers: {
-                  "Content-Disposition": `attachment; filename="${filename}"`,
-                  "Content-Type": "application/octet-stream",
-                },
-              }),
-            );
-          }
+  // List directory
+  if (stat.isDirectory()) {
+    try {
+      const entries = readdirSync(p, { withFileTypes: true })
+        .map((e) => {
+          let size = 0;
+          let modified = "";
+          try {
+            const s = statSync(join(p, e.name));
+            size = s.size;
+            modified = s.mtime.toISOString().slice(0, 10);
+          } catch {}
+          return {
+            name: e.name,
+            type: e.isDirectory() ? "dir" : "file",
+            size,
+            modified,
+            viewable: e.isFile() && isViewable(e.name),
+          };
+        })
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+          return a.name.localeCompare(b.name);
         });
-        stream.on("error", () => {
-          ssh.end();
-          resolve(NextResponse.json({ error: "Read failed" }, { status: 500 }));
-        });
-      } else {
-        sftp.readdir(path, (err, list) => {
-          ssh.end();
-          if (err)
-            return resolve(
-              NextResponse.json({ error: "readdir failed" }, { status: 500 }),
-            );
-          const files = list
-            .map((f) => ({
-              name: f.filename,
-              type: f.attrs.isDirectory() ? "dir" : "file",
-              size: f.attrs.size,
-              modified: new Date(f.attrs.mtime! * 1000)
-                .toISOString()
-                .split("T")[0],
-              viewable: !f.attrs.isDirectory() && isTextFile(f.filename),
-            }))
-            .sort((a, b) => {
-              if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
-              return a.name.localeCompare(b.name);
-            });
-          resolve(NextResponse.json({ files, path }));
-        });
-      }
-    });
-  });
+      return NextResponse.json({ path: p, files: entries });
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ error: "Unknown path type" }, { status: 400 });
 }
 
+// POST — upload file
 export async function POST(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const formData = await request.formData();
-  const file = formData.get("file") as File;
-  const destPath = safePath((formData.get("path") as string) || "");
+  const form = await request.formData();
+  const file = form.get("file") as File | null;
+  const dest = safePath((form.get("path") as string) ?? "");
+
   if (!file) return NextResponse.json({ error: "No file" }, { status: 400 });
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const ssh = await getSSHClient();
-  return new Promise<NextResponse>((resolve) => {
-    ssh.sftp((err, sftp) => {
-      if (err) {
-        ssh.end();
-        return resolve(
-          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
-        );
-      }
-      const writeStream = sftp.createWriteStream(`${destPath}/${file.name}`);
-      writeStream.on("close", () => {
-        ssh.end();
-        resolve(NextResponse.json({ success: true }));
-      });
-      writeStream.on("error", () => {
-        ssh.end();
-        resolve(NextResponse.json({ error: "Write failed" }, { status: 500 }));
-      });
-      writeStream.end(buffer);
-    });
-  });
+  try {
+    if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
+    const buf = Buffer.from(await file.arrayBuffer());
+    writeFileSync(join(dest, file.name), buf);
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
 }
 
-// Write file content — called when user saves edits from the web editor
+// PUT — write file content (editor save)
 export async function PUT(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { path, content } = await request.json();
-  if (!path || content === undefined)
-    return NextResponse.json(
-      { error: "Missing path or content" },
-      { status: 400 },
-    );
+  const { path: p, content } = await request.json();
+  const safe = safePath(p);
 
-  const destPath = safePath(path);
-  const ssh = await getSSHClient();
+  if (typeof content !== "string")
+    return NextResponse.json({ error: "Missing content" }, { status: 400 });
 
-  return new Promise<NextResponse>((resolve) => {
-    ssh.sftp((err, sftp) => {
-      if (err) {
-        ssh.end();
-        return resolve(
-          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
-        );
-      }
-      const writeStream = sftp.createWriteStream(destPath);
-      writeStream.on("close", () => {
-        ssh.end();
-        resolve(NextResponse.json({ success: true }));
-      });
-      writeStream.on("error", () => {
-        ssh.end();
-        resolve(NextResponse.json({ error: "Write failed" }, { status: 500 }));
-      });
-      writeStream.end(Buffer.from(content, "utf8"));
-    });
-  });
+  try {
+    writeFileSync(safe, content, "utf8");
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
 }
 
-// Delete file or folder (folder uses rm -rf via exec)
+// DELETE — delete file or directory
 export async function DELETE(request: NextRequest) {
   if (!authCheck(request))
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(request.url);
-  const path = safePath(url.searchParams.get("path") || "");
-  const type = url.searchParams.get("type") ?? "file"; // "file" | "dir"
+  const p = safePath(url.searchParams.get("path") ?? "");
+  const type = url.searchParams.get("type");
 
-  if (path === "/root" || path === "/home")
-    return NextResponse.json(
-      { error: "Cannot delete root directory" },
-      { status: 400 },
-    );
+  // Safety — never delete root or home dirs
+  const PROTECTED = [
+    "/root",
+    "/home",
+    "/etc",
+    "/var",
+    "/usr",
+    "/bin",
+    "/sys",
+    "/proc",
+  ];
+  if (PROTECTED.includes(p))
+    return NextResponse.json({ error: "Protected path" }, { status: 403 });
 
-  const ssh = await getSSHClient();
+  if (!existsSync(p))
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  if (type === "dir") {
-    // Use exec to rm -rf directory
-    return new Promise<NextResponse>((resolve) => {
-      ssh.exec(`rm -rf "${path}"`, (err, stream) => {
-        if (err) {
-          ssh.end();
-          return resolve(
-            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
-          );
-        }
-        stream.on("close", () => {
-          ssh.end();
-          resolve(NextResponse.json({ success: true }));
-        });
-        stream.on("error", () => {
-          ssh.end();
-          resolve(
-            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
-          );
-        });
-      });
-    });
+  try {
+    if (type === "dir") {
+      execSync(`rm -rf "${p}"`, { timeout: 10000 });
+    } else {
+      unlinkSync(p);
+    }
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
-
-  // Delete file via SFTP
-  return new Promise<NextResponse>((resolve) => {
-    ssh.sftp((err, sftp) => {
-      if (err) {
-        ssh.end();
-        return resolve(
-          NextResponse.json({ error: "SFTP failed" }, { status: 500 }),
-        );
-      }
-      sftp.unlink(path, (err) => {
-        ssh.end();
-        if (err)
-          return resolve(
-            NextResponse.json({ error: "Delete failed" }, { status: 500 }),
-          );
-        resolve(NextResponse.json({ success: true }));
-      });
-    });
-  });
 }
