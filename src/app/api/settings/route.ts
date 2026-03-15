@@ -109,7 +109,7 @@ async function healthCheck() {
   // Redis — always quit/disconnect to avoid leaks
   {
     const Redis = (await import("ioredis")).default;
-    const redis = new Redis(getEnv("REDIS_URL") || "redis://localhost:6380", {
+    const redis = new Redis(getEnv("REDIS_URL") || "redis://localhost:6379", {
       lazyConnect: true,
       connectTimeout: 2000,
       maxRetriesPerRequest: 0,

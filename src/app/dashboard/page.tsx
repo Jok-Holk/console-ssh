@@ -852,6 +852,7 @@ interface Field {
 
 interface HealthResult {
   ok: boolean;
+  status?: string;
   reason?: string;
 }
 
@@ -1053,6 +1054,18 @@ function SettingsTab({
     }
   };
 
+  const [rechecking, setRechecking] = useState(false);
+
+  const recheck = async () => {
+    setRechecking(true);
+    const res = await authFetch("/api/settings");
+    if (res?.ok) {
+      const data = await res.json();
+      setHealth(data.health);
+    }
+    setRechecking(false);
+  };
+
   const healthBadge = (key: string) => {
     if (!health) return null;
     const h = health[key] as
@@ -1071,12 +1084,41 @@ function SettingsTab({
       misconfigured: { color: "#f87171", label: "Misconfigured" },
     };
 
+    const hints: Record<string, Record<string, string>> = {
+      redis: {
+        not_running: "Run: systemctl start redis-server",
+        not_installed:
+          "Run: apt install -y redis-server && systemctl enable redis-server",
+        misconfigured: "Check REDIS_URL in settings below",
+      },
+      ssh: {
+        misconfigured:
+          'Set VPS_PRIVATE_KEY_PATH and run: ssh-keygen -t ed25519 -f ./keys/id_rsa -N "" && cat ./keys/id_rsa.pub >> ~/.ssh/authorized_keys',
+        not_running: "Run: systemctl start ssh",
+        not_installed:
+          "Run: apt install -y openssh-server && systemctl enable ssh",
+      },
+      docker: {
+        not_installed: "Run: curl -fsSL https://get.docker.com | sh",
+        not_running: "Run: systemctl start docker",
+      },
+      pm2: {
+        not_installed: "Run: npm install -g pm2",
+        not_running: "Run: pm2 resurrect",
+      },
+      cv: {
+        not_running:
+          "Start cv-service: pm2 start ecosystem.config.js --only cv-service",
+        misconfigured: "Set CV_SERVICE_URL in Modules section below",
+      },
+    };
+
     const st = (h.status ?? (h.ok ? "ok" : "not_running")) as string;
     const cfg = statusConfig[st] ?? statusConfig["not_running"];
+    const hint = hints[key]?.[st];
 
     return (
       <span
-        title={h.reason ?? cfg.label}
         style={{
           marginLeft: 8,
           display: "inline-flex",
@@ -1086,6 +1128,7 @@ function SettingsTab({
         }}
       >
         <span
+          title={h.reason ?? cfg.label}
           style={{
             display: "inline-block",
             width: 7,
@@ -1103,6 +1146,19 @@ function SettingsTab({
         {h.reason && st !== "ok" && (
           <span style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>
             — {h.reason}
+          </span>
+        )}
+        {hint && (
+          <span
+            title={hint}
+            style={{
+              fontSize: 9,
+              color: "rgba(255,255,255,0.2)",
+              cursor: "help",
+              textDecoration: "underline dotted",
+            }}
+          >
+            ?
           </span>
         )}
       </span>
@@ -1153,6 +1209,111 @@ function SettingsTab({
         maxWidth: 720,
       }}
     >
+      {/* Redis critical warning — shown when Redis is not OK */}
+      {health && health.redis && !health.redis.ok && (
+        <div
+          style={{
+            background: "rgba(248,113,113,0.07)",
+            border: "1px solid rgba(248,113,113,0.3)",
+            borderRadius: 12,
+            padding: "16px 18px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 12,
+            }}
+          >
+            <span style={{ fontSize: 18 }}>⚠</span>
+            <span style={{ fontSize: 13, fontWeight: 500, color: s.red }}>
+              Redis is required but not available
+            </span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={recheck}
+              disabled={rechecking}
+              style={{
+                padding: "5px 14px",
+                background: "rgba(248,113,113,0.1)",
+                border: "0.5px solid rgba(248,113,113,0.4)",
+                borderRadius: 7,
+                color: s.red,
+                fontFamily: s.mono,
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              {rechecking ? "Checking..." : "↻ Re-check"}
+            </button>
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "rgba(255,255,255,0.55)",
+              lineHeight: 1.8,
+              marginBottom: 10,
+            }}
+          >
+            Redis is used to securely exchange one-time credentials between the
+            desktop app and this server. Without it, Electron-based login will
+            not work.
+          </div>
+          <div
+            style={{
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 8,
+              padding: "10px 14px",
+              fontFamily: s.mono,
+              fontSize: 11,
+              color: "rgba(255,255,255,0.6)",
+              lineHeight: 1.9,
+            }}
+          >
+            {(health.redis as HealthResult).status === "not_installed" ? (
+              <>
+                <div style={{ color: s.muted, marginBottom: 4 }}>
+                  # Install Redis
+                </div>
+                <div>apt install -y redis-server</div>
+                <div>systemctl enable redis-server</div>
+                <div>systemctl start redis-server</div>
+              </>
+            ) : (
+              <>
+                <div style={{ color: s.muted, marginBottom: 4 }}>
+                  # Start Redis
+                </div>
+                <div>systemctl start redis-server</div>
+                <div style={{ color: s.muted, marginTop: 6, marginBottom: 4 }}>
+                  # Then verify
+                </div>
+                <div>
+                  redis-cli ping
+                  <span style={{ color: s.green, marginLeft: 12 }}>
+                    # should return PONG
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: s.muted }}>
+            After starting Redis, click{" "}
+            <strong style={{ color: "rgba(255,255,255,0.4)" }}>
+              ↻ Re-check
+            </strong>{" "}
+            above to verify.
+            {health.redis.reason && (
+              <span style={{ marginLeft: 8, color: "rgba(248,113,113,0.6)" }}>
+                ({health.redis.reason})
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Core connection */}
       <div style={card()}>
         <div
@@ -1170,6 +1331,22 @@ function SettingsTab({
           {healthBadge("redis")}
           {healthBadge("ssh")}
           <div style={{ flex: 1 }} />
+          <button
+            onClick={recheck}
+            disabled={rechecking}
+            style={{
+              padding: "4px 10px",
+              background: "transparent",
+              border: `0.5px solid ${s.border}`,
+              borderRadius: 7,
+              color: s.muted,
+              fontFamily: s.mono,
+              fontSize: 10,
+              cursor: "pointer",
+            }}
+          >
+            {rechecking ? "..." : "↻"}
+          </button>
           <button
             onClick={testSSH}
             disabled={sshTesting}
@@ -1350,9 +1527,28 @@ function SettingsTab({
             color: s.muted,
             letterSpacing: "0.13em",
             marginBottom: 16,
+            display: "flex",
+            alignItems: "center",
           }}
         >
-          MODULES
+          <span>MODULES</span>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={recheck}
+            disabled={rechecking}
+            style={{
+              padding: "4px 10px",
+              background: "transparent",
+              border: `0.5px solid ${s.border}`,
+              borderRadius: 7,
+              color: s.muted,
+              fontFamily: s.mono,
+              fontSize: 10,
+              cursor: "pointer",
+            }}
+          >
+            {rechecking ? "..." : "↻ Re-check"}
+          </button>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {MODULE_DEFS.map((mod) => {
@@ -2069,6 +2265,128 @@ function CvEditor({
   );
 }
 
+// ─── Redis Warning Banner ──────────────────────────────────────────────────────
+function RedisWarningBanner({
+  authFetch,
+  s,
+}: {
+  authFetch: (url: string) => Promise<Response | null>;
+  s: S;
+}) {
+  const [status, setStatus] = useState<
+    "loading" | "ok" | "not_running" | "not_installed"
+  >("loading");
+  const [reason, setReason] = useState("");
+  const [checking, setChecking] = useState(false);
+
+  const check = async () => {
+    setChecking(true);
+    const res = await authFetch("/api/settings");
+    if (res?.ok) {
+      const data = await res.json();
+      const redis = data.health?.redis;
+      if (!redis || redis.ok) {
+        setStatus("ok");
+      } else {
+        setStatus(
+          redis.status === "not_installed" ? "not_installed" : "not_running",
+        );
+        setReason(redis.reason ?? "");
+      }
+    }
+    setChecking(false);
+  };
+
+  useEffect(() => {
+    check();
+  }, []);
+
+  if (status === "loading" || status === "ok") return null;
+
+  return (
+    <div
+      style={{
+        background: "rgba(248,113,113,0.07)",
+        border: "1px solid rgba(248,113,113,0.3)",
+        borderRadius: 12,
+        padding: "16px 18px",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <span style={{ fontSize: 16 }}>⚠</span>
+        <span style={{ fontSize: 13, fontWeight: 500, color: s.red }}>
+          Redis not available — Electron login disabled
+        </span>
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={check}
+          disabled={checking}
+          style={{
+            padding: "5px 14px",
+            background: "rgba(248,113,113,0.1)",
+            border: "0.5px solid rgba(248,113,113,0.4)",
+            borderRadius: 7,
+            color: s.red,
+            fontFamily: s.mono,
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+        >
+          {checking ? "Checking..." : "↻ Re-check"}
+        </button>
+      </div>
+      <div
+        style={{
+          background: "rgba(0,0,0,0.3)",
+          borderRadius: 8,
+          padding: "10px 14px",
+          fontFamily: s.mono,
+          fontSize: 11,
+          color: "rgba(255,255,255,0.6)",
+          lineHeight: 2,
+        }}
+      >
+        {status === "not_installed" ? (
+          <>
+            <span style={{ color: s.muted }}># Install and start Redis</span>
+            <br />
+            apt install -y redis-server
+            <br />
+            systemctl enable redis-server
+            <br />
+            systemctl start redis-server
+          </>
+        ) : (
+          <>
+            <span style={{ color: s.muted }}># Start Redis</span>
+            <br />
+            systemctl start redis-server
+            <br />
+            <span style={{ color: s.muted }}># Verify</span>
+            <br />
+            redis-cli ping
+            <span style={{ color: s.green, marginLeft: 12 }}># → PONG</span>
+          </>
+        )}
+      </div>
+      {reason && (
+        <div
+          style={{ marginTop: 8, fontSize: 10, color: "rgba(248,113,113,0.5)" }}
+        >
+          {reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const [tab, setTab] = useState<TabId>("home");
@@ -2594,306 +2912,314 @@ export default function DashboardPage() {
         >
           {/* ── HOME ── */}
           {tab === "home" && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 14,
-                marginBottom: 14,
-              }}
-            >
-              {[
-                {
-                  label: "CPU USAGE",
-                  value: metrics?.cpu ?? 0,
-                  color: "#8060d0",
-                  bar: "#8060d0",
-                },
-                {
-                  label: "MEMORY",
-                  value: metrics?.ram.pct ?? 0,
-                  color: s.cyan,
-                  bar: "#0ea5e9",
-                },
-                {
-                  label: "DISK",
-                  value: metrics?.disk.pct ?? 0,
-                  color: s.green,
-                  bar: "#22c55e",
-                },
-              ].map((item) => (
-                <div
-                  key={item.label}
-                  style={{ ...card(), borderTop: `2px solid ${item.bar}` }}
-                >
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Redis not ready — prominent banner */}
+              <RedisWarningBanner authFetch={authFetch} s={s} />
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gap: 14,
+                }}
+              >
+                {[
+                  {
+                    label: "CPU USAGE",
+                    value: metrics?.cpu ?? 0,
+                    color: "#8060d0",
+                    bar: "#8060d0",
+                  },
+                  {
+                    label: "MEMORY",
+                    value: metrics?.ram.pct ?? 0,
+                    color: s.cyan,
+                    bar: "#0ea5e9",
+                  },
+                  {
+                    label: "DISK",
+                    value: metrics?.disk.pct ?? 0,
+                    color: s.green,
+                    bar: "#22c55e",
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    style={{ ...card(), borderTop: `2px solid ${item.bar}` }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: s.muted,
+                        letterSpacing: "0.13em",
+                        marginBottom: 8,
+                      }}
+                    >
+                      {item.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 30,
+                        fontWeight: 500,
+                        color: item.color,
+                        marginBottom: 8,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {item.value}%
+                    </div>
+                    <Bar pct={item.value} color={item.bar} />
+                  </div>
+                ))}
+                <div style={{ ...card(), gridColumn: "1 / 3" }}>
                   <div
                     style={{
                       fontSize: 10,
                       color: s.muted,
                       letterSpacing: "0.13em",
-                      marginBottom: 8,
+                      marginBottom: 12,
                     }}
                   >
-                    {item.label}
+                    SYSTEM
                   </div>
+                  {[
+                    ["Uptime", metrics?.uptime ?? "—"],
+                    [
+                      "Load Avg",
+                      metrics
+                        ? `${metrics.load["1m"]} · ${metrics.load["5m"]} · ${metrics.load["15m"]}`
+                        : "—",
+                    ],
+                    ["IP", process.env.NEXT_PUBLIC_VPS_HOST ?? "—"],
+                    [
+                      "Network ↓",
+                      metrics ? `${fmt(metrics.network.rxSec)}/s` : "—",
+                    ],
+                    [
+                      "Network ↑",
+                      metrics ? `${fmt(metrics.network.txSec)}/s` : "—",
+                    ],
+                  ].map(([k, v]) => (
+                    <InfoRow key={k} k={k} v={v} s={s} />
+                  ))}
+                </div>
+                <div style={card()}>
                   <div
                     style={{
-                      fontSize: 30,
-                      fontWeight: 500,
-                      color: item.color,
-                      marginBottom: 8,
-                      lineHeight: 1,
-                    }}
-                  >
-                    {item.value}%
-                  </div>
-                  <Bar pct={item.value} color={item.bar} />
-                </div>
-              ))}
-              <div style={{ ...card(), gridColumn: "1 / 3" }}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: s.muted,
-                    letterSpacing: "0.13em",
-                    marginBottom: 12,
-                  }}
-                >
-                  SYSTEM
-                </div>
-                {[
-                  ["Uptime", metrics?.uptime ?? "—"],
-                  [
-                    "Load Avg",
-                    metrics
-                      ? `${metrics.load["1m"]} · ${metrics.load["5m"]} · ${metrics.load["15m"]}`
-                      : "—",
-                  ],
-                  ["IP", process.env.NEXT_PUBLIC_VPS_HOST ?? "—"],
-                  [
-                    "Network ↓",
-                    metrics ? `${fmt(metrics.network.rxSec)}/s` : "—",
-                  ],
-                  [
-                    "Network ↑",
-                    metrics ? `${fmt(metrics.network.txSec)}/s` : "—",
-                  ],
-                ].map(([k, v]) => (
-                  <InfoRow key={k} k={k} v={v} s={s} />
-                ))}
-              </div>
-              <div style={card()}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: s.muted,
-                    letterSpacing: "0.13em",
-                    marginBottom: 12,
-                  }}
-                >
-                  PM2 PROCESSES
-                </div>
-                {pm2List.length === 0 ? (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: s.muted,
-                      textAlign: "center",
-                      padding: "16px 0",
-                    }}
-                  >
-                    No processes
-                  </div>
-                ) : (
-                  pm2List.slice(0, 5).map((p) => (
-                    <div
-                      key={p.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 9,
-                        padding: "7px 0",
-                        borderBottom: `1px solid rgba(255,255,255,0.05)`,
-                        fontSize: 12,
-                      }}
-                    >
-                      <StatusDot status={p.status} />
-                      <span
-                        style={{
-                          flex: 1,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {p.name}
-                      </span>
-                      <span style={{ fontSize: 11, color: s.purple }}>
-                        {p.cpu}%
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: s.muted,
-                          width: 52,
-                          textAlign: "right",
-                        }}
-                      >
-                        {fmt(p.memory)}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-              <div style={{ ...card(), gridColumn: "1 / 4" }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    marginBottom: 16,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 11,
+                      fontSize: 10,
                       color: s.muted,
                       letterSpacing: "0.13em",
+                      marginBottom: 12,
                     }}
                   >
-                    QUICK ACCESS
-                  </span>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {[2, 3, 4].map((n) => (
-                      <button
-                        key={n}
-                        onClick={() => setQaCols(n)}
-                        style={{
-                          width: 26,
-                          height: 22,
-                          background:
-                            qaCols === n
-                              ? "rgba(148,120,255,0.25)"
-                              : "transparent",
-                          border: `0.5px solid ${qaCols === n ? "rgba(148,120,255,0.5)" : s.border}`,
-                          borderRadius: 5,
-                          color: qaCols === n ? s.purple : s.muted,
-                          fontFamily: s.mono,
-                          fontSize: 10,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {n}
-                      </button>
-                    ))}
+                    PM2 PROCESSES
                   </div>
-                </div>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: `repeat(${qaCols}, 1fr)`,
-                    gap: 12,
-                  }}
-                >
-                  {[
-                    {
-                      id: "terminal",
-                      icon: ">_",
-                      label: "Terminal",
-                      sub: "SSH Console",
-                      always: true,
-                      flag: "metrics" as const,
-                      qaKey: "NEXT_PUBLIC_QA_TERMINAL",
-                    },
-                    {
-                      id: "monitor",
-                      icon: "◈",
-                      label: "Monitor",
-                      sub: "Realtime",
-                      always: false,
-                      flag: "metrics" as const,
-                      qaKey: "NEXT_PUBLIC_QA_MONITOR",
-                    },
-                    {
-                      id: "docker",
-                      icon: "▣",
-                      label: "Docker",
-                      sub: "Containers",
-                      always: false,
-                      flag: "docker" as const,
-                      qaKey: "NEXT_PUBLIC_QA_DOCKER",
-                    },
-                    {
-                      id: "pm2",
-                      icon: "⟳",
-                      label: "PM2",
-                      sub: "Processes",
-                      always: false,
-                      flag: "pm2" as const,
-                      qaKey: "NEXT_PUBLIC_QA_PM2",
-                    },
-                    {
-                      id: "files",
-                      icon: "⊟",
-                      label: "Files",
-                      sub: "SFTP",
-                      always: false,
-                      flag: "files" as const,
-                      qaKey: "NEXT_PUBLIC_QA_FILES",
-                    },
-                    {
-                      id: "cv",
-                      icon: "✎",
-                      label: "CV Editor",
-                      sub: "PDF Export",
-                      always: false,
-                      flag: "cv" as const,
-                      qaKey: "NEXT_PUBLIC_QA_CV",
-                    },
-                  ]
-                    .filter((item) => {
-                      const modOn = item.always || modules[item.flag];
-                      const qaOn = process.env[item.qaKey] !== "false";
-                      return modOn && qaOn;
-                    })
-                    .map((item) => (
+                  {pm2List.length === 0 ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: s.muted,
+                        textAlign: "center",
+                        padding: "16px 0",
+                      }}
+                    >
+                      No processes
+                    </div>
+                  ) : (
+                    pm2List.slice(0, 5).map((p) => (
                       <div
-                        key={item.id}
-                        onClick={() => setTab(item.id as TabId)}
+                        key={p.id}
                         style={{
-                          background: "rgba(255,255,255,0.025)",
-                          border: `0.5px solid ${s.border}`,
-                          borderRadius: 12,
-                          padding: "20px 14px",
-                          cursor: "pointer",
-                          textAlign: "center",
-                          transition: "all 0.12s",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.borderColor =
-                            "rgba(148,120,255,0.35)";
-                          e.currentTarget.style.background =
-                            "rgba(128,96,208,0.08)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = s.border;
-                          e.currentTarget.style.background =
-                            "rgba(255,255,255,0.025)";
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 9,
+                          padding: "7px 0",
+                          borderBottom: `1px solid rgba(255,255,255,0.05)`,
+                          fontSize: 12,
                         }}
                       >
-                        <div style={{ fontSize: 24, marginBottom: 9 }}>
-                          {item.icon}
-                        </div>
-                        <div style={{ fontSize: 13, fontWeight: 500 }}>
-                          {item.label}
-                        </div>
-                        <div
-                          style={{ fontSize: 11, color: s.muted, marginTop: 4 }}
+                        <StatusDot status={p.status} />
+                        <span
+                          style={{
+                            flex: 1,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
                         >
-                          {item.sub}
-                        </div>
+                          {p.name}
+                        </span>
+                        <span style={{ fontSize: 11, color: s.purple }}>
+                          {p.cpu}%
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: s.muted,
+                            width: 52,
+                            textAlign: "right",
+                          }}
+                        >
+                          {fmt(p.memory)}
+                        </span>
                       </div>
-                    ))}
+                    ))
+                  )}
+                </div>
+                <div style={{ ...card(), gridColumn: "1 / 4" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 16,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: s.muted,
+                        letterSpacing: "0.13em",
+                      }}
+                    >
+                      QUICK ACCESS
+                    </span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[2, 3, 4].map((n) => (
+                        <button
+                          key={n}
+                          onClick={() => setQaCols(n)}
+                          style={{
+                            width: 26,
+                            height: 22,
+                            background:
+                              qaCols === n
+                                ? "rgba(148,120,255,0.25)"
+                                : "transparent",
+                            border: `0.5px solid ${qaCols === n ? "rgba(148,120,255,0.5)" : s.border}`,
+                            borderRadius: 5,
+                            color: qaCols === n ? s.purple : s.muted,
+                            fontFamily: s.mono,
+                            fontSize: 10,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: `repeat(${qaCols}, 1fr)`,
+                      gap: 12,
+                    }}
+                  >
+                    {[
+                      {
+                        id: "terminal",
+                        icon: ">_",
+                        label: "Terminal",
+                        sub: "SSH Console",
+                        always: true,
+                        flag: "metrics" as const,
+                        qaKey: "NEXT_PUBLIC_QA_TERMINAL",
+                      },
+                      {
+                        id: "monitor",
+                        icon: "◈",
+                        label: "Monitor",
+                        sub: "Realtime",
+                        always: false,
+                        flag: "metrics" as const,
+                        qaKey: "NEXT_PUBLIC_QA_MONITOR",
+                      },
+                      {
+                        id: "docker",
+                        icon: "▣",
+                        label: "Docker",
+                        sub: "Containers",
+                        always: false,
+                        flag: "docker" as const,
+                        qaKey: "NEXT_PUBLIC_QA_DOCKER",
+                      },
+                      {
+                        id: "pm2",
+                        icon: "⟳",
+                        label: "PM2",
+                        sub: "Processes",
+                        always: false,
+                        flag: "pm2" as const,
+                        qaKey: "NEXT_PUBLIC_QA_PM2",
+                      },
+                      {
+                        id: "files",
+                        icon: "⊟",
+                        label: "Files",
+                        sub: "SFTP",
+                        always: false,
+                        flag: "files" as const,
+                        qaKey: "NEXT_PUBLIC_QA_FILES",
+                      },
+                      {
+                        id: "cv",
+                        icon: "✎",
+                        label: "CV Editor",
+                        sub: "PDF Export",
+                        always: false,
+                        flag: "cv" as const,
+                        qaKey: "NEXT_PUBLIC_QA_CV",
+                      },
+                    ]
+                      .filter((item) => {
+                        const modOn = item.always || modules[item.flag];
+                        const qaOn = process.env[item.qaKey] !== "false";
+                        return modOn && qaOn;
+                      })
+                      .map((item) => (
+                        <div
+                          key={item.id}
+                          onClick={() => setTab(item.id as TabId)}
+                          style={{
+                            background: "rgba(255,255,255,0.025)",
+                            border: `0.5px solid ${s.border}`,
+                            borderRadius: 12,
+                            padding: "20px 14px",
+                            cursor: "pointer",
+                            textAlign: "center",
+                            transition: "all 0.12s",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.borderColor =
+                              "rgba(148,120,255,0.35)";
+                            e.currentTarget.style.background =
+                              "rgba(128,96,208,0.08)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.borderColor = s.border;
+                            e.currentTarget.style.background =
+                              "rgba(255,255,255,0.025)";
+                          }}
+                        >
+                          <div style={{ fontSize: 24, marginBottom: 9 }}>
+                            {item.icon}
+                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 500 }}>
+                            {item.label}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: s.muted,
+                              marginTop: 4,
+                            }}
+                          >
+                            {item.sub}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
                 </div>
               </div>
             </div>

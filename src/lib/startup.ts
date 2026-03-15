@@ -62,6 +62,27 @@ function removeEnvKey(key: string): void {
   delete process.env[key];
 }
 
+// ── Auto-detect Redis port ────────────────────────────────────────────────────
+function detectRedisUrl(): string {
+  const { execSync } =
+    require("child_process") as typeof import("child_process");
+  // Common Redis ports to probe
+  const candidates = [6379, 6380, 6381];
+  for (const port of candidates) {
+    try {
+      // Try connecting with redis-cli
+      execSync(`redis-cli -p ${port} ping`, { stdio: "pipe", timeout: 2000 });
+      console.log(`[startup] Redis detected on port ${port}`);
+      return `redis://localhost:${port}`;
+    } catch {}
+  }
+  // Fallback — return standard port even if not running yet
+  console.warn(
+    "[startup] Redis not detected on common ports — defaulting to 6379",
+  );
+  return "redis://localhost:6379";
+}
+
 // ── Default .env template ─────────────────────────────────────────────────────
 
 function createDefaultEnv(): void {
@@ -75,7 +96,7 @@ function createDefaultEnv(): void {
 VPS_HOST=127.0.0.1
 VPS_USER=root
 VPS_PRIVATE_KEY_PATH=./keys/id_rsa
-REDIS_URL=redis://localhost:6380
+REDIS_URL=${detectRedisUrl()}
 
 # ── Auth (auto-generated) ─────────────────────────────────
 JWT_SECRET=${randomBytes(48).toString("hex")}
