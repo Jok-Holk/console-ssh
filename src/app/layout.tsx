@@ -3,13 +3,23 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "VPS Manager",
-  description: "VPS Management Dashboard",
+  description:
+    "Self-hosted VPS management dashboard — terminal, metrics, PM2, files, Docker, CV editor.",
+  authors: [{ name: "Jok-Holk", url: "https://github.com/Jok-Holk" }],
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: { url: "/icon-192.png", sizes: "192x192" },
+  },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  themeColor: "#080810",
 };
 
 export default function RootLayout({
