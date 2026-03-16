@@ -45,7 +45,6 @@ export default function ConsolePage() {
       fitAddon.current.fit();
       term.current.focus();
 
-      // Fetch token server-side — cookie is httpOnly, unreadable from JS
       const res = await fetch("/api/auth/token");
       if (!res.ok) {
         window.location.href = "/";
@@ -53,8 +52,7 @@ export default function ConsolePage() {
       }
       const { token } = await res.json();
 
-      const wsUrl =
-        process.env.NEXT_PUBLIC_WS_URL ?? "https://console.jokholk.dev";
+      const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:3001";
       socket.current = io(wsUrl, {
         path: "/socket.io/",
         auth: (cb) => cb({ token }),
@@ -64,39 +62,28 @@ export default function ConsolePage() {
       socket.current.on("connect", () => {
         term.current?.write("\r\n\x1b[32m● Connected\x1b[0m\r\n\r\n");
       });
-
       socket.current.on("connect_error", (err: Error) => {
         term.current?.write(
           `\r\n\x1b[31m● Connection failed: ${err.message}\x1b[0m\r\n`,
         );
       });
-
-      // Output from SSH shell — no local echo
-      socket.current.on("output", (data: string) => {
+      socket.current.on("data", (data: string) => {
         term.current?.write(data);
       });
-
-      // Send input to server only
       term.current.onData((data: string) => {
-        socket.current?.emit("input", data);
+        socket.current?.emit("data", data);
       });
-
       term.current.onResize((size: ResizeEvent) => {
         socket.current?.emit("resize", size);
       });
-
       socket.current.on("disconnect", () => {
         term.current?.write("\r\n\x1b[31m● Disconnected\x1b[0m\r\n");
       });
 
       const handleResize = () => fitAddon.current?.fit();
       window.addEventListener("resize", handleResize);
-
-      // ResizeObserver to catch container size changes (e.g. iframe load)
       const observer = new ResizeObserver(() => fitAddon.current?.fit());
       if (termRef.current) observer.observe(termRef.current);
-
-      // Force fit after a short delay to catch initial render
       setTimeout(() => fitAddon.current?.fit(), 100);
       setTimeout(() => fitAddon.current?.fit(), 500);
 

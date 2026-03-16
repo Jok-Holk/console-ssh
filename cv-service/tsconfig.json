@@ -4,5 +4,5 @@
     "baseUrl": ".",
     "paths": {}
   },
-  "include": ["src/**/*", "public/**/*"]
+  "include": ["src/**/*", "public/**/*", "../src/app/api/[action]"]
 }

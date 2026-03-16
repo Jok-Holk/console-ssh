@@ -5,7 +5,6 @@ import { marked } from "marked";
 
 export const prerender = false;
 
-// Lazily resolve Chromium path — works on Ubuntu VPS
 function getChromiumPath(): string {
   const candidates = [
     process.env.CHROMIUM_PATH ?? "",
@@ -28,7 +27,6 @@ async function mdToPdf(
 ): Promise<ArrayBuffer> {
   const puppeteer = await import("puppeteer-core");
 
-  // Use CSS override from editor, or load saved styles.css
   let css = cssOverride ?? "";
   if (!css) {
     try {
@@ -37,14 +35,12 @@ async function mdToPdf(
     } catch {}
   }
 
-  // Embed font as base64 so Puppeteer can load it without a file server
   let fontBase64 = "";
   try {
     const fontPath = join(process.cwd(), "public", "fonts", "times.ttf");
     fontBase64 = readFileSync(fontPath).toString("base64");
   } catch {}
 
-  // Replace relative font URL with base64 data URI
   if (fontBase64) {
     css = css.replace(
       /src:\s*url\(['"]?fonts\/times\.ttf['"]?\)[^;]*/,
@@ -53,13 +49,9 @@ async function mdToPdf(
   }
 
   const body = await marked.parse(md);
-
   const html = `<!DOCTYPE html>
 <html lang="${lang}">
-<head>
-  <meta charset="UTF-8" />
-  <style>${css}</style>
-</head>
+<head><meta charset="UTF-8" /><style>${css}</style></head>
 <body>${body}</body>
 </html>`;
 
@@ -78,67 +70,46 @@ async function mdToPdf(
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-
-    // Wait for fonts to load
     await page.evaluateHandle("document.fonts.ready");
-
     const pdf = await page.pdf({
       format: "A4",
       margin: { top: "1.3cm", bottom: "1.3cm", left: "1.5cm", right: "1.5cm" },
       printBackground: true,
     });
-
     return pdf.buffer as ArrayBuffer;
   } finally {
     await browser.close();
   }
 }
 
-// GET /api/export?lang=vi — download saved PDF
-// GET /api/export?lang=vi&regen=1 — regenerate from saved MD then download
+// GET /api/export?lang=vi — always regenerate from MD
 export const GET: APIRoute = async ({ url }) => {
   const lang = url.searchParams.get("lang") ?? "vi";
-  const regen = url.searchParams.get("regen") === "1";
-
-  if (!["vi", "en"].includes(lang)) {
+  const regen = url.searchParams.get("regen") !== "0";
+  if (!["vi", "en"].includes(lang))
     return new Response("Invalid lang", { status: 400 });
-  }
 
   try {
     let pdfBuffer: ArrayBuffer;
-
     if (regen) {
-      const mdPath = join(
-        process.cwd(),
-        "public",
-        "resumes",
-        lang,
-        `resume-${lang}.md`,
+      const md = readFileSync(
+        join(process.cwd(), "public", "resumes", lang, `resume-${lang}.md`),
+        "utf8",
       );
-      const md = readFileSync(mdPath, "utf8");
       pdfBuffer = await mdToPdf(md, lang);
     } else {
-      const pdfPath = join(
-        process.cwd(),
-        "public",
-        "resumes",
-        lang,
-        `resume-${lang}.pdf`,
+      const buf = readFileSync(
+        join(process.cwd(), "public", "resumes", lang, `resume-${lang}.pdf`),
       );
-      const buf = readFileSync(pdfPath);
       pdfBuffer = buf.buffer.slice(
         buf.byteOffset,
         buf.byteOffset + buf.byteLength,
       ) as ArrayBuffer;
     }
-
-    const filename =
-      lang === "vi" ? "CV_PhucThai_VI.pdf" : "CV_PhucThai_EN.pdf";
-
     return new Response(pdfBuffer, {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="resume-${lang}.pdf"`,
         "Access-Control-Allow-Origin": process.env.VPS_MANAGER_URL ?? "*",
       },
     });
@@ -148,24 +119,18 @@ export const GET: APIRoute = async ({ url }) => {
 };
 
 // POST /api/export — body: { lang, md, css? }
-// Export PDF from custom markdown + optional CSS override
 export const POST: APIRoute = async ({ request }) => {
   const { lang = "vi", md, css: cssOverride } = await request.json();
-
-  if (!["vi", "en"].includes(lang)) {
+  if (!["vi", "en"].includes(lang))
     return new Response("Invalid lang", { status: 400 });
-  }
   if (!md) return new Response("Missing md content", { status: 400 });
 
   try {
     const pdfBuffer = await mdToPdf(md, lang, cssOverride);
-    const filename =
-      lang === "vi" ? "CV_PhucThai_VI.pdf" : "CV_PhucThai_EN.pdf";
-
     return new Response(pdfBuffer, {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="resume-${lang}.pdf"`,
         "Access-Control-Allow-Origin": process.env.VPS_MANAGER_URL ?? "*",
       },
     });
