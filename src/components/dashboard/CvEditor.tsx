@@ -1,374 +1,399 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { S } from "./shared";
 
-type DeployStep = {
-  step: string;
-  status: "running" | "done" | "skipped";
-  output?: string;
-};
-
-interface Props {
+export default function CvEditor({
+  authFetch,
+  s,
+}: {
   authFetch: (u: string, o?: RequestInit) => Promise<Response | null>;
   s: S;
-}
+}) {
+  const [lang, setLang] = useState<"vi" | "en">("vi");
+  const [md, setMd] = useState("");
+  const [css, setCss] = useState("");
+  const [activePanel, setActivePanel] = useState<"md" | "css">("md");
+  const [loading, setLoading] = useState(false);
+  const [savingMd, setSavingMd] = useState(false);
+  const [savingCss, setSavingCss] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const previewRef = useRef<HTMLIFrameElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-export default function DeployPanel({ authFetch, s }: Props) {
-  const [open, setOpen] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [deploying, setDeploying] = useState(false);
-  const [gitInfo, setGitInfo] = useState<{
-    hasUpdates: boolean;
-    current: string;
-    pending: string[];
-  } | null>(null);
-  const [steps, setSteps] = useState<DeployStep[]>([]);
-  const [done, setDone] = useState<string | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-
+  // Load MD when lang changes
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [steps]);
+    (async () => {
+      setLoading(true);
+      const res = await authFetch(`/api/cv/md?lang=${lang}`);
+      if (res?.ok) {
+        const { content } = await res.json();
+        setMd(content);
+      }
+      setLoading(false);
+    })();
+  }, [lang, authFetch]);
 
-  const checkUpdates = async () => {
-    setChecking(true);
-    setGitInfo(null);
-    setSteps([]);
-    setDone(null);
-    const res = await authFetch("/api/deploy");
-    if (res?.ok) setGitInfo(await res.json());
-    setChecking(false);
-  };
+  // Load CSS once on mount
+  useEffect(() => {
+    (async () => {
+      const res = await authFetch("/api/cv/css");
+      if (res?.ok) {
+        const { content } = await res.json();
+        setCss(content);
+      }
+    })();
+  }, [authFetch]);
 
-  const pollUntilBack = () => {
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
+  // Debounced live preview — re-render when MD or CSS changes
+  useEffect(() => {
+    if (!md) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch("/api/auth/token", { cache: "no-store" });
-        if (res.ok || res.status === 401) {
-          clearInterval(interval);
-          window.location.href = "/dashboard";
+        const res = await fetch("/api/cv/render", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lang, md, css }),
+        });
+        if (res.ok && previewRef.current) {
+          previewRef.current.srcdoc = await res.text();
+        } else if (!res.ok && previewRef.current) {
+          const errMsg =
+            res.status === 502
+              ? "CV service is not running. Start cv-service or check Settings."
+              : `Preview error: HTTP ${res.status}`;
+          previewRef.current.srcdoc = `<html><body style="background:#0f0f1e;color:#f87171;font-family:monospace;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><div style="font-size:24px;margin-bottom:12px">⚠</div><div>${errMsg}</div></div></body></html>`;
         }
-      } catch {}
-      if (attempts > 30) {
-        clearInterval(interval);
-        setDone("Server may still be restarting. Refresh manually.");
-        setDeploying(false);
+      } catch {
+        if (previewRef.current) {
+          previewRef.current.srcdoc = `<html><body style="background:#0f0f1e;color:#f87171;font-family:monospace;padding:20px;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><div style="font-size:24px;margin-bottom:12px">⚠</div><div>Cannot reach CV service</div></div></body></html>`;
+        }
       }
-    }, 1000);
+    }, 500);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [md, css, lang]);
+
+  const handleSaveMd = async () => {
+    setSavingMd(true);
+    const res = await authFetch("/api/cv/md", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lang, content: md }),
+    });
+    setSavingMd(false);
+    setSaveMsg(res?.ok ? "MD saved ✓" : "Save failed");
+    setTimeout(() => setSaveMsg(null), 2500);
   };
 
-  const runDeploy = async () => {
-    setDeploying(true);
-    setSteps([]);
-    setDone(null);
-    const res = await authFetch("/api/deploy", { method: "POST" });
-    if (!res?.body) {
-      setDeploying(false);
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "",
-      deployStarted = false;
-    const liveOutput: Record<string, string> = {};
+  const handleSaveCss = async () => {
+    setSavingCss(true);
+    const res = await authFetch("/api/cv/css", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: css }),
+    });
+    setSavingCss(false);
+    setSaveMsg(res?.ok ? "CSS saved ✓" : "Save failed");
+    setTimeout(() => setSaveMsg(null), 2500);
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
     try {
-      while (true) {
-        const { done: sd, value } = await reader.read();
-        if (sd) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split("\n\n");
-        buf = parts.pop() ?? "";
-        for (const part of parts) {
-          const em = part.match(/^event: (\w+)/m);
-          const dm = part.match(/^data: (.+)/m);
-          if (!em || !dm) continue;
-          const data = JSON.parse(dm[1]);
-          if (em[1] === "step") {
-            deployStarted = true;
-            setSteps((prev) => {
-              const idx = prev.findIndex((s) => s.step === data.step);
-              const merged = {
-                ...data,
-                output: data.output ?? liveOutput[data.step] ?? "",
-              };
-              if (idx >= 0) {
-                const n = [...prev];
-                n[idx] = merged;
-                return n;
-              }
-              return [...prev, merged];
-            });
-          }
-          if (em[1] === "output") {
-            liveOutput[data.step] = (liveOutput[data.step] ?? "") + data.chunk;
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.step === data.step
-                  ? { ...s, output: liveOutput[data.step] }
-                  : s,
-              ),
-            );
-          }
-          if (em[1] === "done") setDone(data.message);
-        }
-      }
-    } catch {}
-    setDeploying(false);
-    if (deployStarted) {
-      setDone("Deploy triggered. Waiting for server to come back...");
-      pollUntilBack();
+      const res = await fetch("/api/cv/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lang, md, css }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `resume-${lang}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Export failed: " + String(err));
     }
+    setExporting(false);
   };
 
-  const sColor = (st: string) =>
-    st === "done" ? s.green : st === "running" ? s.amber : s.muted;
+  const btn = (
+    color: string,
+    border: string,
+    bg = "transparent",
+  ): React.CSSProperties => ({
+    padding: "7px 16px",
+    background: bg,
+    border: `0.5px solid ${border}`,
+    borderRadius: 8,
+    color,
+    fontFamily: s.mono,
+    fontSize: 12,
+    cursor: "pointer",
+    whiteSpace: "nowrap" as const,
+  });
 
   return (
-    <>
-      <button
-        onClick={() => {
-          setOpen(true);
-          checkUpdates();
-        }}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "calc(100vh - 120px)",
+        gap: 12,
+      }}
+    >
+      {/* Toolbar */}
+      <div
         style={{
-          padding: "8px 16px",
-          background: "rgba(128,96,208,0.15)",
-          border: "0.5px solid rgba(148,120,255,0.4)",
-          borderRadius: 9,
-          color: "#c4adff",
-          fontFamily: s.mono,
-          fontSize: 12,
-          cursor: "pointer",
           display: "flex",
           alignItems: "center",
-          gap: 7,
-          whiteSpace: "nowrap",
+          gap: 10,
+          flexWrap: "wrap",
         }}
       >
-        ⬆ Deploy
-      </button>
-
-      {open && (
+        {/* Lang */}
         <div
           style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 200,
-            background: "rgba(8,8,16,0.85)",
-            backdropFilter: "blur(8px)",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            border: `0.5px solid ${s.border}`,
+            borderRadius: 8,
+            overflow: "hidden",
           }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOpen(false);
+        >
+          {(["vi", "en"] as const).map((l) => (
+            <button
+              key={l}
+              onClick={() => setLang(l)}
+              style={{
+                padding: "7px 16px",
+                background: lang === l ? "rgba(128,96,208,0.2)" : "transparent",
+                border: "none",
+                color: lang === l ? s.purple : s.muted,
+                fontFamily: s.mono,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {l.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
+        {/* Panel toggle */}
+        <div
+          style={{
+            display: "flex",
+            border: `0.5px solid ${s.border}`,
+            borderRadius: 8,
+            overflow: "hidden",
+          }}
+        >
+          {(["md", "css"] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setActivePanel(p)}
+              style={{
+                padding: "7px 16px",
+                background:
+                  activePanel === p ? "rgba(128,96,208,0.2)" : "transparent",
+                border: "none",
+                color: activePanel === p ? s.purple : s.muted,
+                fontFamily: s.mono,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {p === "md" ? "Markdown" : "CSS"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {saveMsg && (
+          <span
+            style={{
+              fontSize: 12,
+              color: saveMsg.includes("✓") ? s.green : s.red,
+            }}
+          >
+            {saveMsg}
+          </span>
+        )}
+        {loading && (
+          <span style={{ fontSize: 12, color: s.amber }}>Loading...</span>
+        )}
+
+        {activePanel === "md" ? (
+          <button
+            onClick={handleSaveMd}
+            disabled={savingMd || loading}
+            style={{
+              ...btn(s.green, "rgba(74,222,128,0.3)"),
+              opacity: savingMd ? 0.5 : 1,
+            }}
+          >
+            {savingMd ? "Saving..." : "Save MD"}
+          </button>
+        ) : (
+          <button
+            onClick={handleSaveCss}
+            disabled={savingCss}
+            style={{
+              ...btn(s.cyan, "rgba(56,189,248,0.3)"),
+              opacity: savingCss ? 0.5 : 1,
+            }}
+          >
+            {savingCss ? "Saving..." : "Save CSS"}
+          </button>
+        )}
+
+        <button
+          onClick={handleExport}
+          disabled={exporting || loading}
+          style={{
+            ...btn("#c4adff", "rgba(148,120,255,0.4)", "rgba(128,96,208,0.18)"),
+            opacity: exporting ? 0.5 : 1,
+          }}
+        >
+          {exporting ? "Generating..." : "⬇ Export PDF"}
+        </button>
+
+        <a
+          href={`/api/cv/export?lang=${lang}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ ...btn(s.muted, s.border), textDecoration: "none" }}
+        >
+          ↗ Public
+        </a>
+      </div>
+
+      {/* Editor + Preview */}
+      <div
+        style={{
+          flex: 1,
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 12,
+          minHeight: 0,
+        }}
+      >
+        {/* Left: MD or CSS editor */}
+        <div
+          style={{
+            background: s.surface,
+            border: `0.5px solid ${s.border}`,
+            borderRadius: 14,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
           }}
         >
           <div
             style={{
-              width: 560,
-              background: "#0f0f1e",
-              border: "0.5px solid rgba(148,120,255,0.2)",
-              borderRadius: 16,
-              padding: 26,
-              display: "flex",
-              flexDirection: "column",
-              gap: 16,
+              padding: "10px 16px",
+              borderBottom: `0.5px solid ${s.border}`,
+              fontSize: 11,
+              color: s.muted,
+              letterSpacing: "0.1em",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <div style={{ fontSize: 15, fontWeight: 500, color: "#c4adff" }}>
-                Deploy Update
-              </div>
-              <button
-                onClick={() => setOpen(false)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: s.muted,
-                  fontSize: 16,
-                  cursor: "pointer",
-                }}
-              >
-                ✕
-              </button>
-            </div>
-            {checking && (
-              <div style={{ fontSize: 12, color: s.muted }}>
-                Checking remote...
-              </div>
-            )}
-            {gitInfo && (
-              <div
-                style={{
-                  background: "rgba(0,0,0,0.3)",
-                  borderRadius: 10,
-                  padding: 14,
-                  fontSize: 12,
-                }}
-              >
-                <div
-                  style={{
-                    color: s.muted,
-                    fontSize: 10,
-                    letterSpacing: "0.1em",
-                    marginBottom: 5,
-                  }}
-                >
-                  CURRENT
-                </div>
-                <div
-                  style={{
-                    color: s.text,
-                    marginBottom: 12,
-                    fontFamily: s.mono,
-                  }}
-                >
-                  {gitInfo.current}
-                </div>
-                {gitInfo.hasUpdates ? (
-                  <>
-                    <div
-                      style={{
-                        color: s.amber,
-                        fontSize: 10,
-                        letterSpacing: "0.1em",
-                        marginBottom: 5,
-                      }}
-                    >
-                      PENDING
-                    </div>
-                    {gitInfo.pending.map((l, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          color: s.text,
-                          fontFamily: s.mono,
-                          fontSize: 11,
-                          padding: "2px 0",
-                        }}
-                      >
-                        · {l}
-                      </div>
-                    ))}
-                  </>
-                ) : (
-                  <div style={{ color: s.green, fontSize: 11 }}>
-                    ✓ Already up to date
-                  </div>
-                )}
-              </div>
-            )}
-            {steps.length > 0 && (
-              <div
-                ref={logRef}
-                style={{
-                  background: "rgba(0,0,0,0.35)",
-                  borderRadius: 10,
-                  padding: 14,
-                  maxHeight: 220,
-                  overflow: "auto",
-                }}
-              >
-                {steps.map((step, i) => (
-                  <div key={i} style={{ marginBottom: 10 }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: 12,
-                        marginBottom: 3,
-                      }}
-                    >
-                      <span style={{ color: sColor(step.status) }}>
-                        {step.status === "done"
-                          ? "✓"
-                          : step.status === "running"
-                            ? "⟳"
-                            : "–"}
-                      </span>
-                      <span style={{ color: s.text, fontWeight: 500 }}>
-                        {step.step}
-                      </span>
-                      <span style={{ color: s.muted, fontSize: 10 }}>
-                        {step.status}
-                      </span>
-                    </div>
-                    {step.output && (
-                      <pre
-                        style={{
-                          margin: 0,
-                          fontSize: 10,
-                          color: s.muted,
-                          fontFamily: s.mono,
-                          whiteSpace: "pre-wrap",
-                          wordBreak: "break-all",
-                          paddingLeft: 18,
-                          lineHeight: 1.6,
-                        }}
-                      >
-                        {step.output.slice(-600)}
-                      </pre>
-                    )}
-                  </div>
-                ))}
-                {done && (
-                  <div style={{ color: s.green, fontSize: 12, marginTop: 4 }}>
-                    ✓ {done}
-                  </div>
-                )}
-              </div>
-            )}
-            <div
-              style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}
-            >
-              <button
-                onClick={checkUpdates}
-                disabled={checking || deploying}
-                style={{
-                  padding: "8px 14px",
-                  background: "transparent",
-                  border: `0.5px solid ${s.border}`,
-                  borderRadius: 8,
-                  color: s.muted,
-                  fontFamily: s.mono,
-                  fontSize: 11,
-                  cursor: "pointer",
-                }}
-              >
-                {checking ? "Checking..." : "↻ Refresh"}
-              </button>
-              <button
-                onClick={runDeploy}
-                disabled={deploying || checking}
-                style={{
-                  padding: "8px 20px",
-                  background: "rgba(128,96,208,0.2)",
-                  border: "0.5px solid rgba(148,120,255,0.4)",
-                  borderRadius: 8,
-                  color: "#c4adff",
-                  fontFamily: s.mono,
-                  fontSize: 11,
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  opacity: deploying ? 0.6 : 1,
-                }}
-              >
-                {deploying ? "Deploying..." : "⬆ Deploy Now"}
-              </button>
-            </div>
+            {activePanel === "md"
+              ? `MARKDOWN — resume-${lang}.md`
+              : "CSS — styles.css"}
           </div>
+          <textarea
+            value={activePanel === "md" ? md : css}
+            onChange={(e) =>
+              activePanel === "md"
+                ? setMd(e.target.value)
+                : setCss(e.target.value)
+            }
+            spellCheck={false}
+            placeholder={activePanel === "md" ? "Loading..." : "Loading CSS..."}
+            style={{
+              flex: 1,
+              resize: "none",
+              background: "transparent",
+              border: "none",
+              padding: "14px 16px",
+              color: activePanel === "css" ? s.cyan : s.text,
+              fontFamily: s.mono,
+              fontSize: 12,
+              lineHeight: 1.75,
+              outline: "none",
+            }}
+          />
         </div>
-      )}
-    </>
+
+        {/* Right: Preview */}
+        <div
+          style={{
+            background: "#fff",
+            border: `0.5px solid ${s.border}`,
+            borderRadius: 14,
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              padding: "10px 16px",
+              borderBottom: "0.5px solid #eee",
+              fontSize: 11,
+              color: "#888",
+              letterSpacing: "0.1em",
+              background: "#fafafa",
+              display: "flex",
+              justifyContent: "space-between",
+            }}
+          >
+            <span>PREVIEW — A4</span>
+            <span style={{ fontSize: 10, color: "#bbb" }}>
+              live · 500ms debounce
+            </span>
+          </div>
+          <iframe
+            ref={previewRef}
+            title="CV Preview"
+            style={{ flex: 1, border: "none", background: "#fff" }}
+            sandbox="allow-same-origin"
+          />
+        </div>
+      </div>
+
+      {/* Footer links */}
+      <div style={{ fontSize: 11, color: s.muted }}>
+        Download link:
+        <code
+          style={{
+            margin: "0 8px",
+            color: s.cyan,
+            background: "rgba(0,0,0,0.2)",
+            padding: "2px 8px",
+            borderRadius: 5,
+          }}
+        >
+          /api/cv/export?lang=vi
+        </code>
+        <code
+          style={{
+            color: s.cyan,
+            background: "rgba(0,0,0,0.2)",
+            padding: "2px 8px",
+            borderRadius: 5,
+          }}
+        >
+          /api/cv/export?lang=en
+        </code>
+      </div>
+    </div>
   );
 }
