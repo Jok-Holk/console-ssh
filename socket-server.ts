@@ -10,10 +10,24 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import jwt from "jsonwebtoken";
-import { config } from "dotenv";
 
-// Load .env relative to cwd
-config({ path: path.join(process.cwd(), ".env") });
+// Load .env manually — dotenv v17 + tsx has process.env injection issues
+const envPath = path.join(process.cwd(), ".env");
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx < 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const val = trimmed
+      .slice(idx + 1)
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/\\n/g, "\n");
+    if (!process.env[key]) process.env[key] = val;
+  }
+}
 
 const PORT = parseInt(process.env.SOCKET_PORT ?? "3001");
 
