@@ -1,7 +1,10 @@
 {
-  "name": "cv-service",
-  "type": "module",
+  "name": "vps-manager-cv-service",
   "version": "1.0.0",
+  "private": true,
+  "description": "CV Editor service — Markdown to PDF via Puppeteer",
+  "author": "Jok-Holk <jokholk.dev@gmail.com>",
+  "license": "MIT",
   "scripts": {
     "dev": "astro dev --port 4321",
     "build": "astro build",

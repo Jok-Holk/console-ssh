@@ -1,7 +1,10 @@
 {
-  "name": "console-ssh",
-  "version": "0.1.0",
+  "name": "vps-manager",
+  "version": "1.0.0",
   "private": true,
+  "description": "Self-hosted VPS management dashboard",
+  "author": "Jok-Holk <jokholk.dev@gmail.com>",
+  "license": "MIT",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
